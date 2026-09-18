@@ -1,4 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.GTS" parent="android:Theme.Material.Light.NoActionBar" />
+    <!--
+        白底全屏主题。
+        windowBackground 设为白色，避免启动瞬间出现深色闪屏。
+        状态栏/导航栏设为透明，配合 Activity 里的沉浸式全屏。
+        windowLightStatusBar 让系统图标在浅色背景上显示为深色。
+    -->
+    <style name="Theme.GTS" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:colorBackground">@android:color/white</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
 </resources>
