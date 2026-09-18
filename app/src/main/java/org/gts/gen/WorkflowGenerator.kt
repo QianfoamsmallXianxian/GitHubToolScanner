@@ -3,11 +3,26 @@ package org.gts.gen
 import org.gts.model.Confidence
 import org.gts.model.ToolReq
 
-enum class PkgManager { APT, BREW }
+enum class PkgManager { APT, BREW, CHOCO }
 
+/**
+ * 目标平台。
+ *
+ * UBUNTU / MACOS：通用原生构建
+ * ANDROID：Android APK，走 ubuntu runner + SDK/NDK + Gradle
+ * WINDOWS：windows runner + choco + MSBuild/CMake
+ *
+ * 曾经有 ALPINE，已移除：alpine 容器里 actions/checkout 依赖的 node20
+ * 是 glibc 构建，跑不起来。
+ */
 enum class CiTarget(val runner: String, val pkg: PkgManager, val label: String) {
     UBUNTU("ubuntu-latest", PkgManager.APT, "Ubuntu (apt)"),
-    MACOS("macos-latest", PkgManager.BREW, "macOS (brew)")
+    ANDROID("ubuntu-latest", PkgManager.APT, "Android APK"),
+    WINDOWS("windows-latest", PkgManager.CHOCO, "Windows"),
+    MACOS("macos-latest", PkgManager.BREW, "macOS (brew)");
+
+    val isAndroid get() = this == ANDROID
+    val isWindows get() = this == WINDOWS
 }
 
 class WorkflowGenerator {
@@ -18,10 +33,13 @@ class WorkflowGenerator {
         val specialSteps: List<String>,
         val unresolved: List<String>,
         val needsSubmodules: Boolean,
-        /** Android SDK 组件，形如 platforms;android-34、build-tools;34.0.0 */
+        /** Android SDK 组件，形如 platforms;android-34 */
         val sdkPackages: List<String>,
-        /** 需要跑 Android SDK 安装步骤 */
-        val needsAndroidSdk: Boolean
+        val needsAndroidSdk: Boolean,
+        /** Android NDK 版本，如 29.0.14206865 */
+        val ndkVersion: String?,
+        /** 需要 MSBuild（Windows 上有 .sln） */
+        val needsMsbuild: Boolean
     )
 
     data class Plan(
@@ -52,37 +70,41 @@ class WorkflowGenerator {
     )
 
     private val brewTable = mapOf(
+        "cmake" to "cmake", "git" to "git", "ninja" to "ninja",
+        "make" to "make", "pkg-config" to "pkg-config",
+        "python" to "python@3.12", "jdk" to "openjdk@17",
+        "libsdl3-dev" to "sdl3", "libsdl3-ttf-dev" to "sdl3_ttf",
+        "libpng-dev" to "libpng", "libfreetype-dev" to "freetype",
+        "libcurl4-openssl-dev" to "curl", "libfontconfig1-dev" to "fontconfig"
+    )
+
+    /** Windows 用 choco。只映射确实需要单独装的。 */
+    private val chocoTable = mapOf(
         "cmake" to "cmake",
-        "git" to "git",
         "ninja" to "ninja",
-        "make" to "make",
-        "pkg-config" to "pkg-config",
-        "python" to "python@3.12",
-        "jdk" to "openjdk@17",
-        "libsdl3-dev" to "sdl3",
-        "libsdl3-ttf-dev" to "sdl3_ttf",
-        "libpng-dev" to "libpng",
-        "libfreetype-dev" to "freetype",
-        "libcurl4-openssl-dev" to "curl",
-        "libfontconfig1-dev" to "fontconfig"
+        "python" to "python3",
+        "pkg-config" to "pkgconfiglite",
+        "make" to "make"
     )
 
     private val cmakeGuess = mapOf(
-        "sdl3" to "libsdl3-dev",
-        "sdl3_ttf" to "libsdl3-ttf-dev",
-        "curl" to "libcurl4-openssl-dev",
-        "zlib" to "zlib1g-dev",
-        "png" to "libpng-dev",
-        "freetype" to "libfreetype-dev",
-        "wayland" to "libwayland-dev",
-        "x11" to "libx11-dev",
-        "opengl" to "libgl1-mesa-dev",
-        "threads" to "make"
+        "sdl3" to "libsdl3-dev", "sdl3_ttf" to "libsdl3-ttf-dev",
+        "curl" to "libcurl4-openssl-dev", "zlib" to "zlib1g-dev",
+        "png" to "libpng-dev", "freetype" to "libfreetype-dev",
+        "wayland" to "libwayland-dev", "x11" to "libx11-dev",
+        "opengl" to "libgl1-mesa-dev", "threads" to "make"
+    )
+
+    /** Android 走 NDK 工具链，这些系统库不需要单独装 */
+    private val androidSkipPkgs = setOf(
+        "libsdl3-dev", "libsdl3-ttf-dev", "libgl1-mesa-dev", "libglu1-mesa-dev",
+        "libcurl4-openssl-dev", "libfontconfig1-dev", "libwayland-dev", "libx11-dev"
     )
 
     private fun mapPkg(tool: String, t: CiTarget): String? = when (t.pkg) {
         PkgManager.APT -> aptTable[tool]
         PkgManager.BREW -> brewTable[tool]
+        PkgManager.CHOCO -> chocoTable[tool]
     }
 
     private fun cleanVer(v: String?): String {
@@ -108,7 +130,7 @@ class WorkflowGenerator {
             appendLine("          $key: '$value'")
         }.trimEnd()
 
-    fun classify(reqs: List<ToolReq>, target: CiTarget): Classified {
+    fun classify(reqs: List<ToolReq>, target: CiTarget, files: Map<String, String> = emptyMap()): Classified {
         val unresolved = linkedSetOf<String>()
         val sysPkgs = linkedSetOf<String>()
         val setupSteps = mutableListOf<String>()
@@ -116,6 +138,8 @@ class WorkflowGenerator {
         val sdkPackages = linkedSetOf<String>()
         var needsSubmodules = false
         var needsAndroidSdk = false
+        var ndkVersion: String? = null
+        val paths = files.keys
 
         for ((tool, list) in reqs.groupBy { it.tool }) {
             val req = list.firstOrNull { it.version != null } ?: list.first()
@@ -149,8 +173,8 @@ class WorkflowGenerator {
                     setupSteps += actionStep("Set up Rust $v", "dtolnay/rust-toolchain@master", "toolchain", v)
                 }
                 "android-ndk" -> {
-                    val v = ver ?: "r29"
-                    specialSteps += actionStep("Set up Android NDK $v", "nttld/setup-ndk@v1", "ndk-version", v)
+                    ndkVersion = ver ?: "r29"
+                    specialSteps += actionStep("Set up Android NDK $ver", "nttld/setup-ndk@v1", "ndk-version", ver ?: "r29")
                 }
                 "gradle" -> {
                     val v = cleanVer(ver).ifBlank { "8.9" }
@@ -166,25 +190,52 @@ class WorkflowGenerator {
                     sdkPackages += "build-tools;$v"
                     needsAndroidSdk = true
                 }
-                // targetSdk / minSdk 只记录，不装额外 platform
                 "android-sdk-target", "android-sdk-min" -> { }
-                // AGP 和 Kotlin 由 Gradle 自己拉，不需要额外步骤
                 "android-gradle-plugin", "kotlin" -> { }
                 "submodule" -> needsSubmodules = true
                 "docker-base" -> { }
                 else -> {
+                    // Android 目标下，NDK 自带工具链，跳过系统图形/网络库
+                    if (target.isAndroid && tool in androidSkipPkgs) return@groupBy
+
                     val pkg = mapPkg(tool, target)
                     if (pkg != null) {
                         sysPkgs += pkg
                     } else if (req.confidence == Confidence.LOW) {
                         val g = cmakeGuess[tool]
                         val mapped = g?.let { mapPkg(it, target) ?: it }
-                        if (mapped != null) sysPkgs += mapped else unresolved += tool
+                        if (mapped != null && !(target.isAndroid && mapped in androidSkipPkgs))
+                            sysPkgs += mapped
+                        else if (mapped == null) unresolved += tool
                     } else {
                         unresolved += tool
                     }
                 }
             }
+        }
+
+        // Android 目标：确保有 SDK 和 JDK
+        if (target.isAndroid) {
+            if (sdkPackages.isEmpty()) {
+                sdkPackages += "platforms;android-34"
+                sdkPackages += "build-tools;34.0.0"
+                needsAndroidSdk = true
+            }
+            val hasJdk = setupSteps.any { it.contains("setup-java") }
+            if (!hasJdk) {
+                setupSteps.add(0, buildString {
+                    appendLine("      - name: Set up JDK 17")
+                    appendLine("        uses: actions/setup-java@v4")
+                    appendLine("        with:")
+                    appendLine("          distribution: temurin")
+                    appendLine("          java-version: '17'")
+                }.trimEnd())
+            }
+        }
+
+        // Windows 目标：有 .sln 就用 MSBuild
+        val needsMsbuild = target.isWindows && paths.any {
+            it.endsWith(".sln") || it.endsWith(".vcxproj")
         }
 
         return Classified(
@@ -194,7 +245,9 @@ class WorkflowGenerator {
             unresolved = unresolved.toList(),
             needsSubmodules = needsSubmodules,
             sdkPackages = sdkPackages.toList(),
-            needsAndroidSdk = needsAndroidSdk
+            needsAndroidSdk = needsAndroidSdk,
+            ndkVersion = ndkVersion,
+            needsMsbuild = needsMsbuild
         )
     }
 
@@ -202,9 +255,16 @@ class WorkflowGenerator {
         reqs: List<ToolReq>,
         target: CiTarget,
         buildCommand: String,
-        useSubmodules: Boolean
+        useSubmodules: Boolean,
+        files: Map<String, String> = emptyMap()
     ): Plan {
-        val c = classify(reqs, target)
+        val c = classify(reqs, target, files)
+        val cmd = buildCommand.ifBlank {
+            when {
+                target.isAndroid -> "cd android && ./gradlew assembleDebug --no-daemon"
+                else -> "make"
+            }
+        }
 
         val yaml = buildString {
             appendLine("name: CI")
@@ -228,10 +288,17 @@ class WorkflowGenerator {
             appendLine()
 
             c.setupSteps.forEach { appendLine(it); appendLine() }
+
+            // Windows：MSBuild
+            if (target.isWindows && c.needsMsbuild) {
+                appendLine("      - name: Add MSBuild to PATH")
+                appendLine("        uses: microsoft/setup-msbuild@v2")
+                appendLine()
+            }
+
             c.specialSteps.forEach { appendLine(it); appendLine() }
 
-            // Android SDK 组件安装。不用 android-actions/setup-android，
-            // 那个 action 会尝试装已下架的 'tools' 包而失败。
+            // Android SDK 组件
             if (c.needsAndroidSdk && target.pkg == PkgManager.APT) {
                 appendLine("      - name: Install Android SDK components")
                 appendLine("        run: |")
@@ -241,27 +308,46 @@ class WorkflowGenerator {
                 appendLine()
             }
 
+            // 系统包
             if (c.sysPkgs.isNotEmpty()) {
-                appendLine("      - name: Install system packages")
-                appendLine("        run: |")
                 when (target.pkg) {
                     PkgManager.APT -> {
+                        appendLine("      - name: Install system packages")
+                        appendLine("        run: |")
                         appendLine("          sudo apt-get update -qq")
                         appendLine("          sudo apt-get install -y ${c.sysPkgs.joinToString(" ")}")
                     }
                     PkgManager.BREW -> {
-                        appendLine("          brew install ${c.sysPkgs.joinToString(" ")}")
+                        appendLine("      - name: Install system packages")
+                        appendLine("        run: brew install ${c.sysPkgs.joinToString(" ")}")
+                    }
+                    PkgManager.CHOCO -> {
+                        appendLine("      - name: Install system packages")
+                        appendLine("        run: choco install ${c.sysPkgs.joinToString(" ")} -y --no-progress")
                     }
                 }
                 appendLine()
             }
 
+            // Windows 上确保有 CMake 和 Ninja
+            if (target.isWindows && c.sysPkgs.isEmpty() && cmd.contains("cmake")) {
+                appendLine("      - name: Install build tools")
+                appendLine("        run: choco install cmake ninja -y --no-progress")
+                appendLine()
+            }
+
             appendLine("      - name: Build")
-            appendLine("        run: ${buildCommand.ifBlank { "make" }}")
+            if (target.isWindows) {
+                appendLine("        run: |")
+                cmd.lines().forEach { appendLine("          $it") }
+            } else {
+                appendLine("        run: |")
+                cmd.lines().forEach { appendLine("          $it") }
+            }
             appendLine()
 
             if (c.unresolved.isNotEmpty()) {
-                appendLine("      # 以下工具无法自动映射到包名，请手工补充到上面的安装步骤：")
+                appendLine("      # 以下工具无法自动映射到包名，请手工补充：")
                 c.unresolved.forEach { appendLine("      #   - $it") }
             }
         }
