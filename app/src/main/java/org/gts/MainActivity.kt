@@ -13,9 +13,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -34,9 +38,44 @@ import org.gts.scan.RepoScanner
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { App() } }
+
+        // 全屏：内容延伸到状态栏/导航栏区域，并隐藏系统栏
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+        @Suppress("DEPRECATION")
+        run {
+            window.statusBarColor = android.graphics.Color.TRANSPARENT
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        }
+
+        setContent {
+            MaterialTheme(colorScheme = WhiteScheme) {
+                App()
+            }
+        }
     }
 }
+
+/** 白底浅色配色，保证在白色背景上所有控件对比度足够。 */
+private val WhiteScheme = lightColorScheme(
+    primary = Color(0xFF1565C0),
+    onPrimary = Color.White,
+    secondary = Color(0xFF546E7A),
+    onSecondary = Color.White,
+    background = Color.White,
+    onBackground = Color(0xFF1A1A1A),
+    surface = Color.White,
+    onSurface = Color(0xFF1A1A1A),
+    surfaceVariant = Color(0xFFF2F2F2),
+    onSurfaceVariant = Color(0xFF444444),
+    error = Color(0xFFC62828),
+    onError = Color.White,
+    outline = Color(0xFFBDBDBD)
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,7 +84,6 @@ fun App() {
     val termux = remember { TermuxBridge(ctx) }
     val scope = rememberCoroutineScope()
 
-    // B17 修复：离开组合时注销 BroadcastReceiver
     DisposableEffect(Unit) {
         onDispose { termux.release() }
     }
@@ -96,7 +134,6 @@ fun App() {
         }
     }
 
-    // B8 修复：只调用一次 generate，classified 从 Plan 里取，不再重复计算
     fun doGenerate() {
         val plan = WorkflowGenerator().generate(reqs, target, buildCmd, useSubmodules)
         genYaml = plan.yaml
@@ -115,9 +152,24 @@ fun App() {
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("GitHub Tool Scanner") }) }
+        containerColor = Color.White,
+        topBar = {
+            TopAppBar(
+                title = { Text("GitHub Tool Scanner") },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.White,
+                    titleContentColor = Color(0xFF1A1A1A)
+                )
+            )
+        }
     ) { pad ->
-        Column(Modifier.padding(pad).padding(16.dp).fillMaxSize()) {
+        Column(
+            Modifier
+                .padding(pad)
+                .safeDrawingPadding()
+                .padding(horizontal = 16.dp)
+                .fillMaxSize()
+        ) {
 
             OutlinedTextField(
                 value = url, onValueChange = { url = it },
@@ -140,11 +192,16 @@ fun App() {
 
             if (log.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
-                Text(log, style = MaterialTheme.typography.bodySmall)
+                Text(log, style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF444444))
             }
 
             Spacer(Modifier.height(8.dp))
-            TabRow(selectedTabIndex = tab) {
+            TabRow(
+                selectedTabIndex = tab,
+                containerColor = Color.White,
+                contentColor = Color(0xFF1565C0)
+            ) {
                 Tab(selected = tab == 0, onClick = { tab = 0 },
                     text = { Text("清单 ${statuses.size}") })
                 Tab(selected = tab == 1, onClick = { tab = 1 },
@@ -157,6 +214,7 @@ fun App() {
                 0 -> LazyColumn(Modifier.weight(1f)) {
                     items(statuses) { s ->
                         ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.White),
                             headlineContent = {
                                 Text(s.req.tool + (s.req.version?.let { "  $it" } ?: ""))
                             },
@@ -166,25 +224,26 @@ fun App() {
                             trailingContent = {
                                 Text(
                                     if (s.ok) "OK ${s.installed ?: ""}" else "缺",
-                                    color = if (s.ok) MaterialTheme.colorScheme.primary
-                                            else MaterialTheme.colorScheme.error
+                                    color = if (s.ok) Color(0xFF2E7D32) else Color(0xFFC62828)
                                 )
                             }
                         )
-                        HorizontalDivider()
+                        HorizontalDivider(color = Color(0xFFE0E0E0))
                     }
                 }
 
                 1 -> LazyColumn(Modifier.weight(1f)) {
                     items(actions) { a ->
                         ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.White),
                             headlineContent = { Text(a.note) },
                             supportingContent = {
                                 Text(a.command, style = MaterialTheme.typography.bodySmall
-                                    .copy(fontFamily = FontFamily.Monospace))
+                                    .copy(fontFamily = FontFamily.Monospace),
+                                    color = Color(0xFF444444))
                             }
                         )
-                        HorizontalDivider()
+                        HorizontalDivider(color = Color(0xFFE0E0E0))
                     }
                 }
 
@@ -219,13 +278,14 @@ fun App() {
                         Text("生成工作流")
                     }
                     if (reqs.isEmpty()) {
-                        Text("请先扫描仓库", style = MaterialTheme.typography.bodySmall)
+                        Text("请先扫描仓库", style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF666666))
                     }
 
                     if (unresolved.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
                         Text("未映射的工具（需手工补充）：" + unresolved.joinToString(", "),
-                            color = MaterialTheme.colorScheme.error,
+                            color = Color(0xFFC62828),
                             style = MaterialTheme.typography.bodySmall)
                     }
 
@@ -245,7 +305,8 @@ fun App() {
                             item {
                                 Text(genYaml,
                                     style = MaterialTheme.typography.bodySmall
-                                        .copy(fontFamily = FontFamily.Monospace))
+                                        .copy(fontFamily = FontFamily.Monospace),
+                                    color = Color(0xFF1A1A1A))
                             }
                         }
                     }
