@@ -1,22 +1,16 @@
 package org.gts.scan
 
-import org.gts.model.Confidence
-
 /**
  * 检测仓库里「该有但没有」的模块和文件。
  *
- * 这是对「源码残缺」的响应：用户可能拿到一个被裁剪过的仓库，
- * 或者 clone 时漏了子模块，或者 .gitignore 把关键文件排除了。
- * 这里基于完整文件树 + 已抓到的声明文件内容，推断缺什么。
+ * 对「源码残缺」的响应：仓库被裁剪、clone 漏子模块、.gitignore 排除关键文件。
+ * 基于完整文件树 + 已抓到的声明文件内容推断缺什么。
  */
 object ModuleGapDetector {
 
     data class Gap(
-        /** 缺什么，如 "gradlew"、"ext/glslang" */
         val what: String,
-        /** 为什么会缺，依据是什么 */
         val why: String,
-        /** 怎么补 */
         val fix: String,
         val severity: Severity
     )
@@ -25,21 +19,27 @@ object ModuleGapDetector {
 
     fun detect(scan: RepoScanner.ScanResult): List<Gap> {
         val gaps = mutableListOf<Gap>()
-        val paths = scan.tree.map { it.path }.toSet()
+        val allPaths = scan.tree.map { it.path }
+        val paths = allPaths.toSet()
         val dirs = scan.tree.filter { it.isDir }.map { it.path }.toSet()
         val files = scan.files
 
         // ---- 子模块 ----
+        // 注意：GitHub Trees API 里，已提交的子模块是 type="commit" 的单条目，
+        // 路径就是子模块名本身（如 ext/glslang），没有尾部斜杠。
+        // 所以必须把「条目本身存在」也算作内容存在，否则每个正常子模块都会被误报。
         files[".gitmodules"]?.let { gm ->
             val declared = Regex("""path\s*=\s*(\S+)""")
                 .findAll(gm).map { it.groupValues[1] }.toList()
             for (sub in declared) {
-                val hasContent = paths.any { it.startsWith("$sub/") } ||
-                    dirs.any { it == sub || it.startsWith("$sub/") }
+                val hasContent =
+                    sub in paths ||
+                    sub in dirs ||
+                    allPaths.any { it.startsWith("$sub/") }
                 if (!hasContent) {
                     gaps += Gap(
                         what = sub,
-                        why = ".gitmodules 声明了子模块 $sub，但仓库里没有它的内容",
+                        why = ".gitmodules 声明了子模块 $sub，但仓库树里没有它的条目",
                         fix = "git submodule update --init --recursive",
                         severity = Severity.BLOCKER
                     )
@@ -48,53 +48,53 @@ object ModuleGapDetector {
         }
 
         // ---- Gradle wrapper ----
-        val hasWrapperProps = paths.any { it.endsWith("gradle-wrapper.properties") }
-        if (hasWrapperProps) {
-            // 找到 wrapper 所在的根（可能是 . 或 android/）
-            val wrapperRoots = paths.filter { it.endsWith("gradle/wrapper/gradle-wrapper.properties") }
-                .map { it.removeSuffix("gradle/wrapper/gradle-wrapper.properties") }
-            for (root in wrapperRoots) {
-                val gradlew = "${root}gradlew"
-                if (gradlew !in paths) {
-                    gaps += Gap(
-                        what = gradlew.ifBlank { "gradlew" },
-                        why = "有 gradle-wrapper.properties 但缺 $gradlew。" +
-                              "很多仓库把它 .gitignore 了，但 CI 里 ./gradlew 会找不到",
-                        fix = "用 gradle wrapper 命令重新生成，或改用系统 gradle",
-                        severity = Severity.WARNING
-                    )
-                }
+        val wrapperProps = allPaths.filter { it.endsWith("gradle-wrapper.properties") }
+        for (wp in wrapperProps) {
+            val root = wp.removeSuffix("gradle/wrapper/gradle-wrapper.properties")
+            val gradlew = "${root}gradlew"
+            if (gradlew !in paths) {
+                gaps += Gap(
+                    what = gradlew,
+                    why = "有 $wp 但缺 $gradlew。很多仓库把它 .gitignore 了，" +
+                          "但 CI 里 ./gradlew 会找不到",
+                    fix = "改用系统 gradle，或重新生成 wrapper",
+                    severity = Severity.WARNING
+                )
             }
         }
 
-        // ---- CMake 引用的子目录 ----
+        // ---- CMake add_subdirectory 引用的目录 ----
         files.filterKeys { it.endsWith("CMakeLists.txt") }.forEach { (cmPath, content) ->
             val base = cmPath.removeSuffix("CMakeLists.txt")
-            val refs = Regex("""add_subdirectory\s*\(\s*([^\s)]+)""")
+            Regex("""add_subdirectory\s*\(\s*([^\s)]+)""")
                 .findAll(content).map { it.groupValues[1] }.toList()
-            for (r in refs) {
-                if (r.startsWith("${") || r.startsWith("\${")) continue
-                val target = "$base$r"
-                val exists = dirs.any { it == target || it == target.trimEnd('/') } ||
-                    paths.any { it.startsWith("$target/") }
-                if (!exists) {
-                    gaps += Gap(
-                        what = target,
-                        why = "$cmPath 里 add_subdirectory($r)，但该目录不存在",
-                        fix = "检查是否漏了子模块，或该目录被 .gitignore 排除",
-                        severity = Severity.BLOCKER
-                    )
+                .forEach { r ->
+                    // 跳过 CMake 变量引用，如 ${FOO}
+                    if (r.startsWith("\${")) return@forEach
+                    val target = "$base$r"
+                    val exists = target in dirs || target in paths ||
+                        allPaths.any { it.startsWith("$target/") }
+                    if (!exists) {
+                        gaps += Gap(
+                            what = target,
+                            why = "$cmPath 里 add_subdirectory($r)，但该目录不存在",
+                            fix = "检查是否漏了子模块，或该目录被 .gitignore 排除",
+                            severity = Severity.BLOCKER
+                        )
+                    }
                 }
-            }
         }
 
         // ---- Go ----
-        if ("go.mod" in files && "go.sum" !in paths) {
-            val usesDeps = files["go.mod"]?.contains("require") == true
-            if (usesDeps) {
+        val goModPath = allPaths.firstOrNull { it == "go.mod" || it.endsWith("/go.mod") }
+        if (goModPath != null) {
+            val dir = goModPath.removeSuffix("go.mod")
+            val goSum = "${dir}go.sum"
+            val content = files[goModPath].orEmpty()
+            if (goSum !in paths && content.contains("require")) {
                 gaps += Gap(
-                    what = "go.sum",
-                    why = "go.mod 有 require 但缺 go.sum",
+                    what = goSum,
+                    why = "$goModPath 有 require 但缺 $goSum",
                     fix = "go mod download && go mod tidy",
                     severity = Severity.WARNING
                 )
@@ -102,8 +102,8 @@ object ModuleGapDetector {
         }
 
         // ---- Node 锁文件 ----
-        val pkgJsons = paths.filter { it.endsWith("package.json") }
-        val lockFiles = paths.filter {
+        val pkgJsons = allPaths.filter { it.endsWith("package.json") }
+        val lockFiles = allPaths.filter {
             it.endsWith("package-lock.json") || it.endsWith("yarn.lock") ||
             it.endsWith("pnpm-lock.yaml") || it.endsWith("bun.lockb") || it.endsWith("bun.lock")
         }
@@ -117,36 +117,40 @@ object ModuleGapDetector {
         }
 
         // ---- Python ----
-        if ("pyproject.toml" in files && "poetry.lock" !in paths) {
-            val usesPoetry = files["pyproject.toml"]?.contains("[tool.poetry]") == true
-            if (usesPoetry) {
+        val pyproject = allPaths.firstOrNull { it == "pyproject.toml" || it.endsWith("/pyproject.toml") }
+        if (pyproject != null) {
+            val dir = pyproject.removeSuffix("pyproject.toml")
+            val lock = "${dir}poetry.lock"
+            val content = files[pyproject].orEmpty()
+            if (lock !in paths && content.contains("[tool.poetry]")) {
                 gaps += Gap(
-                    what = "poetry.lock",
-                    why = "pyproject.toml 用 Poetry 但缺 poetry.lock",
+                    what = lock,
+                    why = "$pyproject 用 Poetry 但缺 poetry.lock",
                     fix = "poetry lock",
                     severity = Severity.WARNING
                 )
             }
         }
 
-        // ---- Dockerfile 引用的本地文件 ----
+        // ---- Dockerfile COPY 的本地路径 ----
         files.filterKeys { it.contains("Dockerfile") }.forEach { (dkPath, content) ->
             val dir = dkPath.substringBeforeLast('/', "")
-            val copies = Regex("""^COPY\s+(?:--\S+\s+)*([^\s]+)""", RegexOption.MULTILINE)
+            Regex("""^COPY\s+(?:--\S+\s+)*([^\s]+)""", RegexOption.MULTILINE)
                 .findAll(content).map { it.groupValues[1] }.toList()
-            for (c in copies) {
-                if (c == "." || c.startsWith("\$") || c.startsWith("--from=")) continue
-                val target = if (dir.isEmpty()) c else "$dir/$c"
-                val exists = paths.any { it == target || it.startsWith("$target/") }
-                if (!exists) {
-                    gaps += Gap(
-                        what = target,
-                        why = "$dkPath 里 COPY $c，但该路径不存在",
-                        fix = "检查文件是否遗漏",
-                        severity = Severity.WARNING
-                    )
+                .forEach { c ->
+                    if (c == "." || c.startsWith("\$")) return@forEach
+                    val target = if (dir.isEmpty()) c else "$dir/$c"
+                    val exists = target in paths || target in dirs ||
+                        allPaths.any { it.startsWith("$target/") }
+                    if (!exists) {
+                        gaps += Gap(
+                            what = target,
+                            why = "$dkPath 里 COPY $c，但该路径不存在",
+                            fix = "检查文件是否遗漏",
+                            severity = Severity.WARNING
+                        )
+                    }
                 }
-            }
         }
 
         // ---- 树被截断 ----
