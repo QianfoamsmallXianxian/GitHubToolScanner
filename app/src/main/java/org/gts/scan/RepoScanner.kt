@@ -15,18 +15,36 @@ class RepoScanner(private val token: String? = null) {
         .build()
 
     private val candidates = listOf(
+        // 语言/工具版本声明
         "package.json", ".nvmrc", ".node-version", ".tool-versions",
         "go.mod", "rust-toolchain.toml", "rust-toolchain",
         "pyproject.toml", ".python-version",
-        "Gemfile", "composer.json", "Dockerfile",
+        "Gemfile", "composer.json",
+
+        // 容器
+        "Dockerfile",
+
+        // Gradle / Android
         "build.gradle.kts", "build.gradle", "gradle.properties",
-        "gradle/wrapper/gradle-wrapper.properties",
-        "CMakeLists.txt", "CMakePresets.json",
-        ".gitmodules", "Makefile", "makefile", "GNUmakefile",
-        "Cargo.toml", "setup.py", "b.sh", "build.sh",
-        "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock",
+        "gradle/wrapper/gradle-wrapper.properties", "gradlew",
         "android/build.gradle.kts", "android/build.gradle",
-        "android/gradlew", "android/settings.gradle.kts"
+        "android/gradlew", "android/settings.gradle.kts",
+
+        // 原生
+        "CMakeLists.txt", "CMakePresets.json",
+        "meson.build", "configure", "configure.ac", "Makefile.am",
+        "Makefile", "makefile", "GNUmakefile",
+        "b.sh", "build.sh",
+
+        // 其他语言
+        "Cargo.toml", "setup.py", "pubspec.yaml", "Package.swift",
+        "pom.xml", "WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel",
+
+        // 锁文件
+        "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock",
+
+        // 子模块
+        ".gitmodules"
     )
 
     fun parseSlug(url: String): Pair<String, String> {
@@ -47,7 +65,6 @@ class RepoScanner(private val token: String? = null) {
 
         client.newCall(req).execute().use { r ->
             val body = r.body?.string().orEmpty()
-
             if (!r.isSuccessful) {
                 val msg = runCatching {
                     JSONObject(body).optString("message")
@@ -60,7 +77,6 @@ class RepoScanner(private val token: String? = null) {
                 }
                 throw IOException("$hint${if (msg.isNotBlank()) "（$msg）" else ""}")
             }
-
             return JSONObject(body).optString("default_branch", "main")
         }
     }
