@@ -6,8 +6,7 @@ import org.json.JSONObject
 
 object Parsers {
 
-    // 重要：下面凡是 """...""" 原始字符串里的正则，反斜杠只写一次。
-    // 原始字符串不处理转义，写成两个反斜杠会变成「字面反斜杠 + 字母」，永远匹配不上。
+    // 凡是 """...""" 原始字符串里的正则，反斜杠只写一次。
 
     fun parseAll(files: Map<String, String>): List<ToolReq> {
         val out = mutableListOf<ToolReq>()
@@ -85,16 +84,43 @@ object Parsers {
         return listOf(ToolReq("gradle", m.groupValues[1], p, Confidence.HIGH))
     }
 
+    /**
+     * 解析 Gradle Kotlin DSL。
+     * 覆盖 Android 平台工具链：NDK、build-tools、compileSdk、targetSdk、
+     * minSdk、JDK、AGP、Kotlin。
+     */
     private fun parseGradleKts(p: String, c: String): List<ToolReq> {
         val res = mutableListOf<ToolReq>()
+
         Regex("""ndkVersion\s*=\s*"([^"]+)""").find(c)?.let {
             res += ToolReq("android-ndk", it.groupValues[1], p, Confidence.HIGH)
         }
+        Regex("""buildToolsVersion\s*=\s*"([^"]+)""").find(c)?.let {
+            res += ToolReq("android-build-tools", it.groupValues[1], p, Confidence.HIGH)
+        }
         Regex("""compileSdk\s*=\s*(\d+)""").find(c)?.let {
-            res += ToolReq("android-sdk", it.groupValues[1], p, Confidence.HIGH)
+            res += ToolReq("android-sdk-platform", it.groupValues[1], p, Confidence.HIGH)
+        }
+        Regex("""targetSdk\s*=\s*(\d+)""").find(c)?.let {
+            res += ToolReq("android-sdk-target", it.groupValues[1], p, Confidence.HIGH)
+        }
+        Regex("""minSdk\s*=\s*(\d+)""").find(c)?.let {
+            res += ToolReq("android-sdk-min", it.groupValues[1], p, Confidence.HIGH)
         }
         Regex("""sourceCompatibility\s*=\s*JavaVersion\.VERSION_(\d+)""").find(c)?.let {
             res += ToolReq("jdk", it.groupValues[1], p, Confidence.HIGH)
+        }
+        // AGP：id("com.android.application") version "8.5.2"
+        Regex("""id\("com\.android\.application"\)\s*version\s*"([^"]+)""").find(c)?.let {
+            res += ToolReq("android-gradle-plugin", it.groupValues[1], p, Confidence.HIGH)
+        }
+        // Kotlin：id("org.jetbrains.kotlin.android") version "2.0.20"
+        Regex("""id\("org\.jetbrains\.kotlin\.android"\)\s*version\s*"([^"]+)""").find(c)?.let {
+            res += ToolReq("kotlin", it.groupValues[1], p, Confidence.HIGH)
+        }
+        // Kotlin 另一种写法：kotlin("android") version "2.0.20"
+        Regex("""kotlin\("android"\)\s*version\s*"([^"]+)""").find(c)?.let {
+            res += ToolReq("kotlin", it.groupValues[1], p, Confidence.HIGH)
         }
         return res
     }
@@ -139,6 +165,19 @@ object Parsers {
         }
         Regex("""python-version:\s*['"]?([\w.]+)""").find(c)?.let {
             res += ToolReq("python", it.groupValues[1], p, Confidence.HIGH)
+        }
+        Regex("""java-version:\s*['"]?([\w.]+)""").find(c)?.let {
+            res += ToolReq("jdk", it.groupValues[1], p, Confidence.HIGH)
+        }
+        Regex("""gradle-version:\s*['"]?([\w.]+)""").find(c)?.let {
+            res += ToolReq("gradle", it.groupValues[1], p, Confidence.HIGH)
+        }
+        // sdkmanager "platforms;android-34"
+        Regex("""platforms;android-(\d+)""").findAll(c).forEach {
+            res += ToolReq("android-sdk-platform", it.groupValues[1], p, Confidence.HIGH)
+        }
+        Regex("""build-tools;([\d.]+)""").findAll(c).forEach {
+            res += ToolReq("android-build-tools", it.groupValues[1], p, Confidence.HIGH)
         }
         Regex("""(?:apt-get install|apk add)([^\n&|]+)""").findAll(c).forEach { m ->
             m.groupValues[1].trim().split(Regex("\\s+")).forEach { pkg ->
