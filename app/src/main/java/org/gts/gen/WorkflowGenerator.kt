@@ -3,12 +3,6 @@ package org.gts.gen
 import org.gts.model.Confidence
 import org.gts.model.ToolReq
 
-/**
- * 目标包管理器。
- *
- * 曾经有 ALPINE，已移除。原因：GitHub Actions 用 container: alpine:latest 时，
- * actions/checkout 依赖的 node20 是 glibc 构建的，在 musl 的 alpine 里跑不起来。
- */
 enum class PkgManager { APT, BREW }
 
 enum class CiTarget(val runner: String, val pkg: PkgManager, val label: String) {
@@ -23,10 +17,13 @@ class WorkflowGenerator {
         val setupSteps: List<String>,
         val specialSteps: List<String>,
         val unresolved: List<String>,
-        val needsSubmodules: Boolean
+        val needsSubmodules: Boolean,
+        /** Android SDK 组件，形如 platforms;android-34、build-tools;34.0.0 */
+        val sdkPackages: List<String>,
+        /** 需要跑 Android SDK 安装步骤 */
+        val needsAndroidSdk: Boolean
     )
 
-    /** B8 修复：把 classified 一并带出去，供 ScriptGenerator 复用，避免重复计算。 */
     data class Plan(
         val yaml: String,
         val unresolved: List<String>,
@@ -88,13 +85,6 @@ class WorkflowGenerator {
         PkgManager.BREW -> brewTable[tool]
     }
 
-    /**
-     * B7 修复：保留版本范围语义。
-     *   ^1.2.3 -> 1.x    （setup-node / setup-python 都接受 x 写法）
-     *   ~1.2.3 -> 1.2.x
-     *   >=3.16 -> 3.16
-     * 原始字符串，反斜杠只写一次。
-     */
     private fun cleanVer(v: String?): String {
         if (v.isNullOrBlank()) return ""
         val w = v.trim()
@@ -123,7 +113,9 @@ class WorkflowGenerator {
         val sysPkgs = linkedSetOf<String>()
         val setupSteps = mutableListOf<String>()
         val specialSteps = mutableListOf<String>()
+        val sdkPackages = linkedSetOf<String>()
         var needsSubmodules = false
+        var needsAndroidSdk = false
 
         for ((tool, list) in reqs.groupBy { it.tool }) {
             val req = list.firstOrNull { it.version != null } ?: list.first()
@@ -164,12 +156,20 @@ class WorkflowGenerator {
                     val v = cleanVer(ver).ifBlank { "8.9" }
                     specialSteps += actionStep("Set up Gradle $v", "gradle/actions/setup-gradle@v4", "gradle-version", v)
                 }
-                "android-sdk" -> {
-                    specialSteps += buildString {
-                        appendLine("      - name: Set up Android SDK")
-                        appendLine("        uses: android-actions/setup-android@v3")
-                    }.trimEnd()
+                "android-sdk-platform" -> {
+                    val v = cleanVer(ver).ifBlank { "34" }
+                    sdkPackages += "platforms;android-$v"
+                    needsAndroidSdk = true
                 }
+                "android-build-tools" -> {
+                    val v = cleanVer(ver).ifBlank { "34.0.0" }
+                    sdkPackages += "build-tools;$v"
+                    needsAndroidSdk = true
+                }
+                // targetSdk / minSdk 只记录，不装额外 platform
+                "android-sdk-target", "android-sdk-min" -> { }
+                // AGP 和 Kotlin 由 Gradle 自己拉，不需要额外步骤
+                "android-gradle-plugin", "kotlin" -> { }
                 "submodule" -> needsSubmodules = true
                 "docker-base" -> { }
                 else -> {
@@ -192,7 +192,9 @@ class WorkflowGenerator {
             setupSteps = setupSteps,
             specialSteps = specialSteps,
             unresolved = unresolved.toList(),
-            needsSubmodules = needsSubmodules
+            needsSubmodules = needsSubmodules,
+            sdkPackages = sdkPackages.toList(),
+            needsAndroidSdk = needsAndroidSdk
         )
     }
 
@@ -227,6 +229,17 @@ class WorkflowGenerator {
 
             c.setupSteps.forEach { appendLine(it); appendLine() }
             c.specialSteps.forEach { appendLine(it); appendLine() }
+
+            // Android SDK 组件安装。不用 android-actions/setup-android，
+            // 那个 action 会尝试装已下架的 'tools' 包而失败。
+            if (c.needsAndroidSdk && target.pkg == PkgManager.APT) {
+                appendLine("      - name: Install Android SDK components")
+                appendLine("        run: |")
+                appendLine("          SDKMANAGER=\$(command -v sdkmanager || find \"\$ANDROID_SDK_ROOT\" -name sdkmanager 2>/dev/null | head -1)")
+                appendLine("          yes | \"\$SDKMANAGER\" --licenses > /dev/null 2>&1 || true")
+                appendLine("          \"\$SDKMANAGER\" ${c.sdkPackages.joinToString(" ") { "\"$it\"" }}")
+                appendLine()
+            }
 
             if (c.sysPkgs.isNotEmpty()) {
                 appendLine("      - name: Install system packages")
