@@ -28,6 +28,7 @@ import org.gts.compare.Status
 import org.gts.fix.FixAction
 import org.gts.fix.FixPlanner
 import org.gts.fix.TermuxBridge
+import org.gts.gen.BuildCommandDetector
 import org.gts.gen.CiTarget
 import org.gts.gen.ScriptGenerator
 import org.gts.gen.WorkflowGenerator
@@ -39,7 +40,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 全屏：内容延伸到状态栏/导航栏区域，并隐藏系统栏
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
@@ -53,14 +53,11 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme(colorScheme = WhiteScheme) {
-                App()
-            }
+            MaterialTheme(colorScheme = WhiteScheme) { App() }
         }
     }
 }
 
-/** 白底浅色配色，保证在白色背景上所有控件对比度足够。 */
 private val WhiteScheme = lightColorScheme(
     primary = Color(0xFF1565C0),
     onPrimary = Color.White,
@@ -98,20 +95,31 @@ fun App() {
     var tab by remember { mutableIntStateOf(0) }
 
     var target by remember { mutableStateOf(CiTarget.UBUNTU) }
-    var buildCmd by remember { mutableStateOf("make") }
+    var buildCmd by remember { mutableStateOf("") }
     var useSubmodules by remember { mutableStateOf(true) }
     var genYaml by remember { mutableStateOf("") }
     var genScript by remember { mutableStateOf("") }
     var unresolved by remember { mutableStateOf<List<String>>(emptyList()) }
+    var buildReason by remember { mutableStateOf("") }
 
     fun doScan() {
         busy = true; log = ""; statuses = emptyList(); actions = emptyList()
         genYaml = ""; genScript = ""; reqs = emptyList(); unresolved = emptyList()
+        buildReason = ""
         scope.launch {
             try {
                 val files = withContext(Dispatchers.IO) {
                     RepoScanner(token.ifBlank { null }).scan(url)
                 }
+
+                // 自动推断构建命令
+                val det = withContext(Dispatchers.Default) {
+                    BuildCommandDetector.detect(files)
+                }
+                buildCmd = det.command
+                buildReason = det.reason
+                useSubmodules = files.containsKey(".gitmodules")
+
                 val parsed = withContext(Dispatchers.Default) { Parsers.parseAll(files) }
                 reqs = parsed
                 val probed = withContext(Dispatchers.IO) {
@@ -121,6 +129,15 @@ fun App() {
                 val cmp = EnvComparator(termux).compare(parsed, probed)
                 statuses = cmp
                 actions = FixPlanner().plan(cmp)
+
+                // 自动生成工作流，无需再点按钮
+                val plan = WorkflowGenerator().generate(parsed, target, det.command, useSubmodules)
+                genYaml = plan.yaml
+                unresolved = plan.unresolved
+                genScript = ScriptGenerator().generate(
+                    plan.classified, target, det.command, useSubmodules
+                )
+
                 log = buildString {
                     append("扫描 ${files.size} 个文件 · 识别 ${parsed.size} 条要求")
                     if (!termux.isInstalled())
@@ -128,13 +145,17 @@ fun App() {
                     else
                         append(" · 缺失 ${cmp.count { !it.ok }} 项")
                 }
+                // 自动切到工作流页，因为扫描后最想看的就是它
+                tab = 2
             } catch (e: Exception) {
                 log = "失败：${e.message}"
             } finally { busy = false }
         }
     }
 
-    fun doGenerate() {
+    // 用户改了目标环境或构建命令后，重新生成
+    fun regenerate() {
+        if (reqs.isEmpty()) return
         val plan = WorkflowGenerator().generate(reqs, target, buildCmd, useSubmodules)
         genYaml = plan.yaml
         unresolved = plan.unresolved
@@ -186,8 +207,12 @@ fun App() {
             )
             Spacer(Modifier.height(12.dp))
 
-            Button(onClick = { doScan() }, enabled = !busy) {
-                Text(if (busy) "扫描中…" else "扫描")
+            Button(
+                onClick = { doScan() },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (busy) "扫描并生成中…" else "扫描并生成工作流")
             }
 
             if (log.isNotBlank()) {
@@ -254,7 +279,7 @@ fun App() {
                         CiTarget.entries.forEach { t ->
                             FilterChip(
                                 selected = target == t,
-                                onClick = { target = t },
+                                onClick = { target = t; regenerate() },
                                 label = { Text(t.label) }
                             )
                         }
@@ -262,24 +287,24 @@ fun App() {
                     Spacer(Modifier.height(8.dp))
 
                     OutlinedTextField(
-                        value = buildCmd, onValueChange = { buildCmd = it },
-                        label = { Text("构建命令，例如 ./b.sh 或 make") },
+                        value = buildCmd, onValueChange = {
+                            buildCmd = it; regenerate()
+                        },
+                        label = { Text("构建命令（自动推断，可改）") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    if (buildReason.isNotBlank()) {
+                        Text("推断依据：$buildReason",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF2E7D32))
+                    }
                     Spacer(Modifier.height(4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = useSubmodules, onCheckedChange = { useSubmodules = it })
+                        Checkbox(checked = useSubmodules, onCheckedChange = {
+                            useSubmodules = it; regenerate()
+                        })
                         Text("递归初始化子模块")
-                    }
-                    Spacer(Modifier.height(8.dp))
-
-                    Button(onClick = { doGenerate() }, enabled = reqs.isNotEmpty()) {
-                        Text("生成工作流")
-                    }
-                    if (reqs.isEmpty()) {
-                        Text("请先扫描仓库", style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF666666))
                     }
 
                     if (unresolved.isNotEmpty()) {
@@ -309,6 +334,11 @@ fun App() {
                                     color = Color(0xFF1A1A1A))
                             }
                         }
+                    } else {
+                        Spacer(Modifier.height(8.dp))
+                        Text("点上面的「扫描并生成工作流」",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF666666))
                     }
                 }
             }
