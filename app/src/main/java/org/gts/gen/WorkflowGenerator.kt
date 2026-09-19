@@ -260,7 +260,7 @@ class WorkflowGenerator {
         gaps: List<org.gts.scan.ModuleGapDetector.Gap> = emptyList()
     ): Plan {
         val gapSteps = GapSteps.build(gaps)
-        val platformSetup = PlatformSetup.detect(files)
+        val platformSetup = PlatformSetup.detect(files, target)
         val c = classify(reqs, target, files)
         val cmd = buildCommand.ifBlank {
             when {
@@ -323,6 +323,24 @@ class WorkflowGenerator {
                 platformSetup.preBuildCommands.forEach { appendLine("          $it") }
                 appendLine()
             }
+            if (platformSetup.sysPackages.isNotEmpty()) {
+                appendLine("      - name: Install platform packages")
+                appendLine("        run: |")
+                when (target.pkg) {
+                    PkgManager.APT -> {
+                        appendLine("          sudo apt-get update -qq")
+                        appendLine("          sudo apt-get install -y " +
+                            platformSetup.sysPackages.joinToString(" "))
+                    }
+                    PkgManager.BREW ->
+                        appendLine("          brew install " +
+                            platformSetup.sysPackages.joinToString(" "))
+                    PkgManager.CHOCO ->
+                        appendLine("          choco install " +
+                            platformSetup.sysPackages.joinToString(" ") +
+                            " -y --no-progress")
+                }
+                appendLine()
             }
             gapSteps.unresolved.forEach {
                 appendLine("      # 无法自动补齐：$it")
@@ -339,7 +357,6 @@ class WorkflowGenerator {
             c.specialSteps.forEach { appendLine(it); appendLine() }
 
             // Android SDK 组件
-            if (c.needsAndroidSdk && target.pkg == PkgManager.APT) {
                 appendLine("      - name: Install Android SDK components")
                 appendLine("        run: |")
                 appendLine("          SDKMANAGER=\$(command -v sdkmanager || find \"\$ANDROID_SDK_ROOT\" -name sdkmanager 2>/dev/null | head -1)")
@@ -376,14 +393,27 @@ class WorkflowGenerator {
                 appendLine()
             }
 
-            appendLine("      - name: Build")
-            if (target.isWindows) {
+            val bm = BuildMatrix.forTarget(target, reqs, files)
+
+            if (bm.pre.isNotEmpty()) {
+                appendLine("      - name: Pre-build")
                 appendLine("        run: |")
-                cmd.lines().forEach { appendLine("          $it") }
-            } else {
-                appendLine("        run: |")
-                cmd.lines().forEach { appendLine("          $it") }
+                bm.pre.forEach { appendLine("          $it") }
+                appendLine()
             }
+
+            appendLine("      - name: Build")
+            appendLine("        run: |")
+            bm.commands.forEach { appendLine("          $it") }
+            appendLine()
+
+            appendLine("      - name: Upload artifact")
+            appendLine("        uses: actions/upload-artifact@v4")
+            appendLine("        with:")
+            appendLine("          name: " + bm.artifactName)
+            appendLine("          path: |")
+            bm.artifacts.forEach { appendLine("            $it") }
+            appendLine("          if-no-files-found: warn")
             appendLine()
 
             if (c.unresolved.isNotEmpty()) {
