@@ -41,6 +41,7 @@ import org.gts.gen.WorkflowGenerator
 import org.gts.model.ToolReq
 import org.gts.parse.Parsers
 import org.gts.scan.ModuleGapDetector
+import org.gts.fix.GapDownloader
 import org.gts.scan.RepoScanner
 import org.gts.util.FileSaver
 import org.gts.util.LocalShell
@@ -108,6 +109,9 @@ fun App() {
     var token by remember { mutableStateOf("") }
     var reqs by remember { mutableStateOf<List<ToolReq>>(emptyList()) }
     var statuses by remember { mutableStateOf<List<Status>>(emptyList()) }
+    var dlItems by remember { mutableStateOf<List<GapDownloader.Item>>(emptyList()) }
+    var dlLog by remember { mutableStateOf("") }
+    var dlBusy by remember { mutableStateOf(false) }
     var actions by remember { mutableStateOf<List<FixAction>>(emptyList()) }
     var gaps by remember { mutableStateOf<List<ModuleGapDetector.Gap>>(emptyList()) }
     var files by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
@@ -214,11 +218,52 @@ fun App() {
         return sb.toString()
     }
 
+    /** 缺失文件直接下载，不走终端。 */
+    fun doDownloadGaps() {
+        if (dlBusy || gaps.isEmpty()) return
+        dlBusy = true
+        dlLog = ""
+        scope.launch {
+            try {
+                val (owner, repo) = RepoScanner(token.ifBlank { null }).parseSlug(url)
+                val plan = withContext(Dispatchers.Default) {
+                    GapDownloader(ctx).plan(gaps, owner, repo, "main", files)
+                }
+                dlItems = plan
+                val can = plan.count { it.kind != GapDownloader.Kind.NOT_DOWNLOADABLE }
+                if (can == 0) {
+                    dlLog = "没有可直接下载的项。"
+                    dlBusy = false
+                    return@launch
+                }
+                dlLog = "开始下载 " + can + " 项"
+                val results = GapDownloader(ctx).run(plan) { msg ->
+                    dlLog = dlLog + "\n" + msg
+                }
+                val okCount = results.count { it.ok }
+                dlLog = dlLog + "\n完成：成功 " + okCount + " / 共 " + results.size
+                log = dlLog
+            } catch (e: Exception) {
+                dlLog = "下载失败：" + e.message
+            } finally {
+                dlBusy = false
+            }
+        }
+    }
+
     fun runTerm() {
         val c = termCmd.trim()
         if (c.isEmpty() || termBusy) return
         termBusy = true
         termHistory = termHistory + ("\$ " + c)
+            val block = LocalShell.shouldUseTermux(c)
+            if (block != null) {
+                termHistory = termHistory + block + "\n[已阻止]"
+                termOut = termHistory.joinToString("\n")
+                termBusy = false
+                termCmd = ""
+                return
+            }
         scope.launch {
             val r = LocalShell.run(c)
             val chunk = buildString {
@@ -348,13 +393,22 @@ fun App() {
                     } else {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = { saveText("fix-gaps.sh", gapFixScript()) }) {
-                                Text("保存补齐脚本")
+                                Text("保存脚本")
+                            }
+                            Button(onClick = { doDownloadGaps() }, enabled = !dlBusy) {
+                                Text(if (dlBusy) "下载中…" else "直接下载")
                             }
                             OutlinedButton(onClick = {
                                 termux.runDetached(gapFixScript())
-                            }) { Text("在 Termux 执行") }
+                            }) { Text("Termux") }
                         }
                         Spacer(Modifier.height(8.dp))
+                        if (dlLog.isNotBlank()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(dlLog, style = MaterialTheme.typography.bodySmall
+                                .copy(fontFamily = FontFamily.Monospace),
+                                color = Color(0xFF1A1A1A))
+                        }
                         LazyColumn(Modifier.weight(1f)) {
                             items(gaps) { g ->
                                 val color = when (g.severity) {
@@ -387,7 +441,7 @@ fun App() {
 
                 4 -> Column(Modifier.weight(1f)) {
                     Text(
-                        "内嵌终端：用 /system/bin/sh 执行。能跑 ls/cat/echo/curl 等；装包、改系统目录需改用 Termux。",
+                        "内嵌终端只能跑 ls/cat/echo/curl 等只读命令。/storage/emulated 是 noexec 分区，无法执行 .sh；装包需用 Termux。缺失文件请到「缺失」页直接下载。",
                         style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666)
                     )
                     Spacer(Modifier.height(8.dp))
