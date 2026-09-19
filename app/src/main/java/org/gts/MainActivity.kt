@@ -235,7 +235,7 @@ fun App() {
                 val slug = RepoScanner(null).parseSlug(url)
                 val ownerRepo = slug.first + "/" + slug.second
                 val r = WorkflowPusher(token).push(
-                    ownerRepo, "gts-build.yml", genYaml
+                    ownerRepo, "gts-build-" + target.name.lowercase() + ".yml", genYaml
                 )
                 pushLog = if (r.ok) {
                     r.message + (r.htmlUrl?.let { "\n" + it } ?: "")
@@ -480,7 +480,7 @@ fun App() {
                     if (genYaml.isNotBlank()) {
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { saveText("gts-build.yml", genYaml) }) {
+                            Button(onClick = { saveText("gts-build-" + target.name.lowercase() + ".yml", genYaml) }) {
                                 Text("保存工作流 .yml")
                             }
                             OutlinedButton(onClick = { doPushWorkflow() }, enabled = !pushBusy) {
@@ -494,7 +494,7 @@ fun App() {
                                 color = Color(0xFF1565C0))
                         }
                         Spacer(Modifier.height(8.dp))
-                        Text("build.yml 预览", style = MaterialTheme.typography.labelLarge)
+                        Text("gts-build-" + target.name.lowercase() + ".yml 预览", style = MaterialTheme.typography.labelLarge)
                         LazyColumn(Modifier.weight(1f)) {
                             item {
                                 Text(genYaml, style = MaterialTheme.typography.bodySmall
