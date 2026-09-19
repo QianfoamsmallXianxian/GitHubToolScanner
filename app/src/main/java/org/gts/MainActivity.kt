@@ -248,6 +248,60 @@ fun App() {
         }
     }
 
+    /** 一键全自动：扫描仓库 → 为全部平台各生成一份 workflow → 依次写入仓库。 */
+    fun doAutoAll() {
+        if (busy) return
+        if (url.isBlank()) { log = "请先填仓库 URL"; return }
+        if (token.isBlank()) { log = "全自动需要 token（repo + workflow 权限）"; return }
+        busy = true
+        pushLog = ""
+        log = "全自动：扫描中…"
+        scope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) { RepoScanner(token).scan(url) }
+                files = result.files
+                gaps = withContext(Dispatchers.Default) { ModuleGapDetector.detect(result) }
+                val det = withContext(Dispatchers.Default) { BuildCommandDetector.detect(result.files) }
+                buildCmd = det.command
+                buildReason = det.reason
+                useSubmodules = result.files.containsKey(".gitmodules")
+                val parsed = withContext(Dispatchers.Default) { Parsers.parseAll(result.files) }
+                reqs = parsed
+                val probed = withContext(Dispatchers.IO) {
+                    if (termux.isInstalled()) EnvComparator(termux).probeAll() else emptyMap()
+                }
+                val cmp = EnvComparator(termux).compare(parsed, probed)
+                statuses = cmp
+                actions = FixPlanner().plan(cmp)
+
+                val slug = RepoScanner(null).parseSlug(url)
+                val ownerRepo = slug.first + "/" + slug.second
+                val sb = StringBuilder()
+                var okCount = 0
+                var lastClassified: WorkflowGenerator.Classified? = null
+                for (t in CiTarget.entries) {
+                    target = t
+                    val plan = WorkflowGenerator().generate(parsed, t, det.command, useSubmodules, result.files, gaps)
+                    lastClassified = plan.classified
+                    genYaml = plan.yaml
+                    unresolved = plan.unresolved
+                    val fileName = "gts-build-" + t.name.lowercase() + ".yml"
+                    val r = WorkflowPusher(token).push(ownerRepo, fileName, plan.yaml)
+                    sb.appendLine((if (r.ok) "[OK] " else "[X] ") + fileName + " - " + r.message)
+                    if (r.ok) okCount++
+                }
+                lastClassified?.let {
+                    genScript = ScriptGenerator().generate(it, target, det.command, useSubmodules)
+                }
+                pushLog = sb.toString().trimEnd()
+                log = "全自动完成：" + okCount + "/" + CiTarget.entries.size + " 个平台工作流已写入仓库"
+                tab = 2
+            } catch (e: Exception) {
+                log = "全自动失败：" + e.message
+            } finally { busy = false }
+        }
+    }
+
     /** 缺失文件直接下载，不走终端。 */
     fun doDownloadGaps() {
         if (dlBusy || gaps.isEmpty()) return
@@ -335,9 +389,9 @@ fun App() {
             Spacer(Modifier.height(12.dp))
 
             Button(
-                onClick = { doScan() }, enabled = !busy,
+                onClick = { doAutoAll() }, enabled = !busy,
                 modifier = Modifier.fillMaxWidth()
-            ) { Text(if (busy) "扫描并生成中…" else "扫描并生成工作流") }
+            ) { Text(if (busy) "全自动执行中…" else "一键全自动（扫描+生成+写入所有平台）") }
 
             if (log.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
