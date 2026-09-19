@@ -196,7 +196,7 @@ class WorkflowGenerator {
                 "docker-base" -> { }
                 else -> {
                     // Android 目标下，NDK 自带工具链，跳过系统图形/网络库
-                    if (target.isAndroid && tool in androidSkipPkgs) return@groupBy
+                    if (target.isAndroid && tool in androidSkipPkgs) continue
 
                     val pkg = mapPkg(tool, target)
                     if (pkg != null) {
