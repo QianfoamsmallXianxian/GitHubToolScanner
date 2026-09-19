@@ -122,9 +122,9 @@ fun App() {
     var busy by remember { mutableStateOf(false) }
     var tab by remember { mutableIntStateOf(0) }
 
-    var target by remember { mutableStateOf(CiTarget.UBUNTU) }
+    var target by remember { mutableStateOf(CiTarget.LINUX) }
     var buildCmd by remember { mutableStateOf("") }
-    var useSubmodules by remember { mutableStateOf(true) }
+    var useSubmodules by remember { mutableStateOf(false) }
     var genYaml by remember { mutableStateOf("") }
     var genScript by remember { mutableStateOf("") }
     var unresolved by remember { mutableStateOf<List<String>>(emptyList()) }
