@@ -4,30 +4,6 @@ import org.gts.model.Confidence
 import org.gts.model.ToolReq
 
 
-enum class PkgManager { APT, BREW, CHOCO }
-
-/**
- * 目标平台。
- *
- * UBUNTU / MACOS：通用原生构建
- * ANDROID：Android APK，走 ubuntu runner + SDK/NDK + Gradle
- * WINDOWS：windows runner + choco + MSBuild/CMake
- *
- * 曾经有 ALPINE，已移除：alpine 容器里 actions/checkout 依赖的 node20
- * 是 glibc 构建，跑不起来。
- */
-enum class CiTarget(val runner: String, val pkg: PkgManager, val label: String) {
-    UBUNTU("ubuntu-latest", PkgManager.APT, "Ubuntu (apt)"),
-    ANDROID("ubuntu-latest", PkgManager.APT, "Android APK"),
-    WINDOWS("windows-latest", PkgManager.CHOCO, "Windows"),
-    MACOS("macos-latest", PkgManager.BREW, "macOS (brew)");
-
-    val isAndroid get() = this == ANDROID
-    val isWindows get() = this == WINDOWS
-    val isMacOS get() = this == MACOS
-    val isLinux get() = this == UBUNTU
-}
-
 class WorkflowGenerator {
 
     data class Classified(
