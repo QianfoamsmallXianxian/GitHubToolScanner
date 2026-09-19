@@ -105,7 +105,7 @@ fun App() {
 
     DisposableEffect(Unit) { onDispose { termux.release() } }
 
-    var url by remember { mutableStateOf("https://github.com/hrydgard/PPSSPP") }
+    var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
     var reqs by remember { mutableStateOf<List<ToolReq>>(emptyList()) }
     var statuses by remember { mutableStateOf<List<Status>>(emptyList()) }
@@ -332,8 +332,6 @@ fun App() {
                         val b = gaps.count { it.severity == ModuleGapDetector.Severity.BLOCKER }
                         Text("缺失 " + gaps.size + (if (b > 0) " (" + b + "!)" else ""))
                     })
-                Tab(selected = tab == 4, onClick = { tab = 4 },
-                    text = { Text("终端") })
             }
 
             when (tab) {
@@ -431,46 +429,6 @@ fun App() {
                     }
                 }
 
-                4 -> Column(Modifier.weight(1f)) {
-                    Text(
-                        "内嵌终端只能跑 ls/cat/echo/curl 等只读命令。/storage/emulated 是 noexec 分区，无法执行 .sh；装包需用 Termux。缺失文件请到「缺失」页直接下载。",
-                        style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666)
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = termCmd, onValueChange = { termCmd = it },
-                            label = { Text("命令") }, singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Button(onClick = { runTerm() }, enabled = !termBusy) {
-                            Text(if (termBusy) "…" else "运行")
-                        }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { termHistory = emptyList(); termOut = "" }) {
-                            Text("清空")
-                        }
-                        OutlinedButton(onClick = { saveText("terminal.log", termOut) }) {
-                            Text("保存输出")
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    SelectionContainer {
-                        Column(
-                            Modifier.weight(1f).verticalScroll(rememberScrollState())
-                        ) {
-                            Text(
-                                termOut.ifBlank { "(等待命令)" },
-                                style = MaterialTheme.typography.bodySmall
-                                    .copy(fontFamily = FontFamily.Monospace),
-                                color = Color(0xFF1A1A1A)
-                            )
-                        }
-                    }
-                }
 
                 2 -> Column(Modifier.weight(1f)) {
                     Text("目标环境", style = MaterialTheme.typography.labelLarge)
