@@ -1,7 +1,7 @@
 package org.gts
 
-import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.horizontalScroll
@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -36,6 +38,8 @@ import org.gts.model.ToolReq
 import org.gts.parse.Parsers
 import org.gts.scan.ModuleGapDetector
 import org.gts.scan.RepoScanner
+import org.gts.util.FileSaver
+import org.gts.util.LocalShell
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,17 +57,25 @@ class MainActivity : ComponentActivity() {
             window.navigationBarColor = android.graphics.Color.TRANSPARENT
         }
 
-        setContent { MaterialTheme(colorScheme = WhiteScheme) { App() } }
+        setContent {
+            MaterialTheme(colorScheme = WhiteScheme) { App() }
+        }
     }
 }
 
 private val WhiteScheme = lightColorScheme(
-    primary = Color(0xFF1565C0), onPrimary = Color.White,
-    secondary = Color(0xFF546E7A), onSecondary = Color.White,
-    background = Color.White, onBackground = Color(0xFF1A1A1A),
-    surface = Color.White, onSurface = Color(0xFF1A1A1A),
-    surfaceVariant = Color(0xFFF2F2F2), onSurfaceVariant = Color(0xFF444444),
-    error = Color(0xFFC62828), onError = Color.White,
+    primary = Color(0xFF1565C0),
+    onPrimary = Color.White,
+    secondary = Color(0xFF546E7A),
+    onSecondary = Color.White,
+    background = Color.White,
+    onBackground = Color(0xFF1A1A1A),
+    surface = Color.White,
+    onSurface = Color(0xFF1A1A1A),
+    surfaceVariant = Color(0xFFF2F2F2),
+    onSurfaceVariant = Color(0xFF444444),
+    error = Color(0xFFC62828),
+    onError = Color.White,
     outline = Color(0xFFBDBDBD)
 )
 
@@ -94,23 +106,37 @@ fun App() {
     var genScript by remember { mutableStateOf("") }
     var unresolved by remember { mutableStateOf<List<String>>(emptyList()) }
     var buildReason by remember { mutableStateOf("") }
-    var treeCount by remember { mutableIntStateOf(0) }
+
+    var termCmd by remember { mutableStateOf("") }
+    var termOut by remember { mutableStateOf("") }
+    var termBusy by remember { mutableStateOf(false) }
+    var termHistory by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    fun saveText(name: String, content: String) {
+        if (content.isBlank()) {
+            Toast.makeText(ctx, "内容为空，未保存", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val err = FileSaver.save(ctx, name, content)
+        val msg = if (err == null)
+            "已保存到 " + FileSaver.displayPath(name)
+        else
+            "保存失败：" + err
+        Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+        log = msg
+    }
 
     fun doScan() {
         busy = true; log = ""; statuses = emptyList(); actions = emptyList()
         gaps = emptyList(); genYaml = ""; genScript = ""; reqs = emptyList()
-        unresolved = emptyList(); buildReason = ""; treeCount = 0; files = emptyMap()
+        unresolved = emptyList(); buildReason = ""; files = emptyMap()
         scope.launch {
             try {
                 val result = withContext(Dispatchers.IO) {
                     RepoScanner(token.ifBlank { null }).scan(url)
                 }
-                treeCount = result.tree.size
                 files = result.files
-
-                // 缺失模块检测
                 gaps = withContext(Dispatchers.Default) { ModuleGapDetector.detect(result) }
-
                 val det = withContext(Dispatchers.Default) {
                     BuildCommandDetector.detect(result.files)
                 }
@@ -127,7 +153,9 @@ fun App() {
                 statuses = cmp
                 actions = FixPlanner().plan(cmp)
 
-                val plan = WorkflowGenerator().generate(parsed, target, det.command, useSubmodules, result.files)
+                val plan = WorkflowGenerator().generate(
+                    parsed, target, det.command, useSubmodules, result.files
+                )
                 genYaml = plan.yaml
                 unresolved = plan.unresolved
                 genScript = ScriptGenerator().generate(
@@ -135,14 +163,13 @@ fun App() {
                 )
 
                 val blockers = gaps.count { it.severity == ModuleGapDetector.Severity.BLOCKER }
-                log = buildString {
-                    append("树 ${result.tree.size} 项 · 声明文件 ${result.files.size} · 工具 ${parsed.size}")
-                    if (blockers > 0) append(" · 缺失模块 $blockers 个")
-                    if (!termux.isInstalled()) append(" · 未检测到 Termux")
-                }
+                log = "树 " + result.tree.size + " 项 · 声明文件 " + result.files.size +
+                    " · 工具 " + parsed.size +
+                    (if (blockers > 0) " · 缺失模块 " + blockers + " 个" else "") +
+                    (if (!termux.isInstalled()) " · 未检测到 Termux" else "")
                 tab = if (blockers > 0) 3 else 2
             } catch (e: Exception) {
-                log = "失败：${e.message}"
+                log = "失败：" + e.message
             } finally { busy = false }
         }
     }
@@ -155,17 +182,6 @@ fun App() {
         genScript = ScriptGenerator().generate(plan.classified, target, buildCmd, useSubmodules)
     }
 
-    fun share(text: String, name: String) {
-        if (text.isBlank()) return
-        val i = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, name)
-            putExtra(Intent.EXTRA_TEXT, text)
-        }
-        ctx.startActivity(Intent.createChooser(i, "分享 $name"))
-    }
-
-    /** 把缺失模块的补齐命令拼成一份脚本 */
     fun gapFixScript(): String {
         val sb = StringBuilder()
         sb.appendLine("#!/usr/bin/env bash")
@@ -174,12 +190,36 @@ fun App() {
         sb.appendLine()
         gaps.forEach { g ->
             if (g.severity != ModuleGapDetector.Severity.INFO) {
-                sb.appendLine("# ${g.what}：${g.why}")
+                sb.appendLine("# " + g.what + "：" + g.why)
                 sb.appendLine(g.fix)
                 sb.appendLine()
             }
         }
         return sb.toString()
+    }
+
+    fun runTerm() {
+        val c = termCmd.trim()
+        if (c.isEmpty() || termBusy) return
+        termBusy = true
+        termHistory = termHistory + ("$ " + c)
+        scope.launch {
+            val r = LocalShell.run(c)
+            val chunk = buildString {
+                if (r.stdout.isNotBlank()) append(r.stdout.trimEnd())
+                if (r.stderr.isNotBlank()) {
+                    if (isNotEmpty()) appendLine()
+                    append("[stderr] ").append(r.stderr.trimEnd())
+                }
+                if (isEmpty()) append("(无输出)")
+                appendLine()
+                append("[exit ").append(r.exitCode).append("]")
+            }
+            termHistory = termHistory + chunk
+            termOut = termHistory.joinToString("\n")
+            termBusy = false
+            termCmd = ""
+        }
     }
 
     Scaffold(
@@ -229,16 +269,18 @@ fun App() {
                 edgePadding = 0.dp
             ) {
                 Tab(selected = tab == 0, onClick = { tab = 0 },
-                    text = { Text("清单 ${statuses.size}") })
+                    text = { Text("清单 " + statuses.size) })
                 Tab(selected = tab == 1, onClick = { tab = 1 },
-                    text = { Text("补齐 ${actions.size}") })
+                    text = { Text("补齐 " + actions.size) })
                 Tab(selected = tab == 2, onClick = { tab = 2 },
                     text = { Text("工作流") })
                 Tab(selected = tab == 3, onClick = { tab = 3 },
                     text = {
                         val b = gaps.count { it.severity == ModuleGapDetector.Severity.BLOCKER }
-                        Text("缺失 ${gaps.size}" + if (b > 0) " ($b!)" else "")
+                        Text("缺失 " + gaps.size + (if (b > 0) " (" + b + "!)" else ""))
                     })
+                Tab(selected = tab == 4, onClick = { tab = 4 },
+                    text = { Text("终端") })
             }
 
             when (tab) {
@@ -247,12 +289,12 @@ fun App() {
                         ListItem(
                             colors = ListItemDefaults.colors(containerColor = Color.White),
                             headlineContent = {
-                                Text(s.req.tool + (s.req.version?.let { "  $it" } ?: ""))
+                                Text(s.req.tool + (s.req.version?.let { "  " + it } ?: ""))
                             },
-                            supportingContent = { Text("${s.req.source} · ${s.req.confidence}") },
+                            supportingContent = { Text(s.req.source + " · " + s.req.confidence) },
                             trailingContent = {
                                 Text(
-                                    if (s.ok) "OK ${s.installed ?: ""}" else "缺",
+                                    if (s.ok) "OK " + (s.installed ?: "") else "缺",
                                     color = if (s.ok) Color(0xFF2E7D32) else Color(0xFFC62828)
                                 )
                             }
@@ -262,6 +304,14 @@ fun App() {
                 }
 
                 1 -> LazyColumn(Modifier.weight(1f)) {
+                    item {
+                        Button(onClick = {
+                            val sb = StringBuilder()
+                            actions.forEach { sb.appendLine(it.command) }
+                            saveText("termux-fix.sh", sb.toString())
+                        }) { Text("保存 Termux 补齐脚本") }
+                        Spacer(Modifier.height(8.dp))
+                    }
                     items(actions) { a ->
                         ListItem(
                             colors = ListItemDefaults.colors(containerColor = Color.White),
@@ -281,8 +331,8 @@ fun App() {
                             color = Color(0xFF2E7D32))
                     } else {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { share(gapFixScript(), "fix-gaps.sh") }) {
-                                Text("分享补齐脚本")
+                            Button(onClick = { saveText("fix-gaps.sh", gapFixScript()) }) {
+                                Text("保存补齐脚本")
                             }
                             OutlinedButton(onClick = {
                                 termux.runDetached(gapFixScript())
@@ -303,9 +353,7 @@ fun App() {
                                 }
                                 ListItem(
                                     colors = ListItemDefaults.colors(containerColor = Color.White),
-                                    headlineContent = {
-                                        Text("[$tag] ${g.what}", color = color)
-                                    },
+                                    headlineContent = { Text("[" + tag + "] " + g.what, color = color) },
                                     supportingContent = {
                                         Column {
                                             Text(g.why, style = MaterialTheme.typography.bodySmall)
@@ -321,7 +369,48 @@ fun App() {
                     }
                 }
 
-                2 -> Column(Modifier.weight(1f)) {
+                4 -> Column(Modifier.weight(1f)) {
+                    Text(
+                        "内嵌终端：用 /system/bin/sh 执行。能跑 ls/cat/echo/curl 等；装包、改系统目录需改用 Termux。",
+                        style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = termCmd, onValueChange = { termCmd = it },
+                            label = { Text("命令") }, singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(onClick = { runTerm() }, enabled = !termBusy) {
+                            Text(if (termBusy) "…" else "运行")
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { termHistory = emptyList(); termOut = "" }) {
+                            Text("清空")
+                        }
+                        OutlinedButton(onClick = { saveText("terminal.log", termOut) }) {
+                            Text("保存输出")
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    SelectionContainer {
+                        Column(
+                            Modifier.weight(1f).verticalScroll(rememberScrollState())
+                        ) {
+                            Text(
+                                termOut.ifBlank { "(等待命令)" },
+                                style = MaterialTheme.typography.bodySmall
+                                    .copy(fontFamily = FontFamily.Monospace),
+                                color = Color(0xFF1A1A1A)
+                            )
+                        }
+                    }
+                }
+
+                else -> Column(Modifier.weight(1f)) {
                     Text("目标环境", style = MaterialTheme.typography.labelLarge)
                     Row(Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -341,7 +430,7 @@ fun App() {
                         modifier = Modifier.fillMaxWidth()
                     )
                     if (buildReason.isNotBlank()) {
-                        Text("推断依据：$buildReason",
+                        Text("推断依据：" + buildReason,
                             style = MaterialTheme.typography.bodySmall, color = Color(0xFF2E7D32))
                     }
                     Spacer(Modifier.height(4.dp))
@@ -360,9 +449,11 @@ fun App() {
                     if (genYaml.isNotBlank()) {
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { share(genYaml, "build.yml") }) { Text("分享 build.yml") }
-                            OutlinedButton(onClick = { share(genScript, "setup.sh") }) {
-                                Text("分享 setup.sh")
+                            Button(onClick = { saveText("build.yml", genYaml) }) {
+                                Text("保存 build.yml")
+                            }
+                            OutlinedButton(onClick = { saveText("setup.sh", genScript) }) {
+                                Text("保存 setup.sh")
                             }
                         }
                         Spacer(Modifier.height(8.dp))
