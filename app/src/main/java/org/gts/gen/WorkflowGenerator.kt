@@ -24,6 +24,8 @@ enum class CiTarget(val runner: String, val pkg: PkgManager, val label: String) 
 
     val isAndroid get() = this == ANDROID
     val isWindows get() = this == WINDOWS
+    val isMacOS get() = this == MACOS
+    val isLinux get() = this == UBUNTU
 }
 
 class WorkflowGenerator {
