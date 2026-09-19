@@ -256,8 +256,10 @@ class WorkflowGenerator {
         target: CiTarget,
         buildCommand: String,
         useSubmodules: Boolean,
-        files: Map<String, String> = emptyMap()
+        files: Map<String, String> = emptyMap(),
+        gaps: List<org.gts.scan.ModuleGapDetector.Gap> = emptyList()
     ): Plan {
+        val gapSteps = GapSteps.build(gaps)
         val c = classify(reqs, target, files)
         val cmd = buildCommand.ifBlank {
             when {
@@ -281,13 +283,25 @@ class WorkflowGenerator {
             appendLine("    steps:")
             appendLine("      - name: Checkout")
             appendLine("        uses: actions/checkout@v4")
-            if (useSubmodules || c.needsSubmodules) {
+            if (useSubmodules || c.needsSubmodules || gapSteps.needRecursiveSubmodules) {
                 appendLine("        with:")
                 appendLine("          submodules: recursive")
             }
             appendLine()
 
             c.setupSteps.forEach { appendLine(it); appendLine() }
+
+            // 缺失项补齐：子模块 / 锁文件 / 生成脚本，全部丢给云端做
+            if (gapSteps.setupCommands.isNotEmpty()) {
+                appendLine("      - name: Repair missing modules")
+                appendLine("        run: |")
+                gapSteps.setupCommands.forEach { appendLine("          $it") }
+                appendLine()
+            }
+            gapSteps.unresolved.forEach {
+                appendLine("      # 无法自动补齐：$it")
+            }
+            if (gapSteps.unresolved.isNotEmpty()) appendLine()
 
             // Windows：MSBuild
             if (target.isWindows && c.needsMsbuild) {
