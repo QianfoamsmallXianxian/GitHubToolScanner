@@ -34,6 +34,7 @@ import org.gts.compare.Status
 import org.gts.fix.FixAction
 import org.gts.fix.FixPlanner
 import org.gts.fix.TermuxBridge
+import org.gts.fix.WorkflowPusher
 import org.gts.gen.BuildCommandDetector
 import org.gts.gen.CiTarget
 import org.gts.gen.ScriptGenerator
@@ -111,6 +112,8 @@ fun App() {
     var statuses by remember { mutableStateOf<List<Status>>(emptyList()) }
     var dlItems by remember { mutableStateOf<List<GapDownloader.Item>>(emptyList()) }
     var dlLog by remember { mutableStateOf("") }
+    var pushBusy by remember { mutableStateOf(false) }
+    var pushLog by remember { mutableStateOf("") }
     var dlBusy by remember { mutableStateOf(false) }
     var actions by remember { mutableStateOf<List<FixAction>>(emptyList()) }
     var gaps by remember { mutableStateOf<List<ModuleGapDetector.Gap>>(emptyList()) }
@@ -174,7 +177,7 @@ fun App() {
                 actions = FixPlanner().plan(cmp)
 
                 val plan = WorkflowGenerator().generate(
-                    parsed, target, det.command, useSubmodules, result.files
+                    parsed, target, det.command, useSubmodules, result.files, gaps
                 )
                 genYaml = plan.yaml
                 unresolved = plan.unresolved
@@ -196,7 +199,7 @@ fun App() {
 
     fun regenerate() {
         if (reqs.isEmpty()) return
-        val plan = WorkflowGenerator().generate(reqs, target, buildCmd, useSubmodules, files)
+        val plan = WorkflowGenerator().generate(reqs, target, buildCmd, useSubmodules, files, gaps)
         genYaml = plan.yaml
         unresolved = plan.unresolved
         genScript = ScriptGenerator().generate(plan.classified, target, buildCmd, useSubmodules)
@@ -216,6 +219,33 @@ fun App() {
             }
         }
         return sb.toString()
+    }
+
+    /** 一键把生成的 workflow 推到目标仓库。 */
+    fun doPushWorkflow() {
+        if (pushBusy || genYaml.isBlank()) return
+        if (token.isBlank()) {
+            pushLog = "需要填 Token（要有 repo + workflow 权限）"
+            return
+        }
+        pushBusy = true
+        pushLog = "推送中…"
+        scope.launch {
+            try {
+                val slug = RepoScanner(null).parseSlug(url)
+                val ownerRepo = slug.first + "/" + slug.second
+                val r = WorkflowPusher(token).push(
+                    ownerRepo, "gts-build.yml", genYaml
+                )
+                pushLog = if (r.ok) {
+                    r.message + (r.htmlUrl?.let { "\n" + it } ?: "")
+                } else r.message
+            } catch (e: Exception) {
+                pushLog = "失败：" + e.message
+            } finally {
+                pushBusy = false
+            }
+        }
     }
 
     /** 缺失文件直接下载，不走终端。 */
@@ -475,6 +505,15 @@ fun App() {
                             OutlinedButton(onClick = { saveText("setup.sh", genScript) }) {
                                 Text("保存 setup.sh")
                             }
+                            Button(onClick = { doPushWorkflow() }, enabled = !pushBusy) {
+                                Text(if (pushBusy) "推送中…" else "推送到 Actions")
+                            }
+                        }
+                        if (pushLog.isNotBlank()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(pushLog, style = MaterialTheme.typography.bodySmall
+                                .copy(fontFamily = FontFamily.Monospace),
+                                color = Color(0xFF1565C0))
                         }
                         Spacer(Modifier.height(8.dp))
                         Text("build.yml 预览", style = MaterialTheme.typography.labelLarge)
