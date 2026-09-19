@@ -6,6 +6,12 @@ import org.json.JSONObject
 
 object Parsers {
 
+    /** CMake find_package 里这些名字在多数项目里是仓库自带源码，不算外部依赖 */
+    private val cmakeVendoredLibs = setOf(
+        "imgui", "imgui_ext", "imgui_internal", "imguifiledialog",
+        "sdl", "sdl2", "sdl3", "sdl3_ttf", "sdl3_image", "sdl3_mixer", "sdl3_net"
+    )
+
     // 凡是 """...""" 原始字符串里的正则，反斜杠只写一次。
 
     fun parseAll(files: Map<String, String>): List<ToolReq> {
@@ -131,7 +137,7 @@ object Parsers {
             res += ToolReq("cmake", it.groupValues[1], p, Confidence.HIGH)
         }
         Regex("""find_package\(\s*([A-Za-z0-9_]+)""").findAll(c).forEach {
-            res += ToolReq(it.groupValues[1].lowercase(), null, p, Confidence.LOW)
+            val _n = it.groupValues[1].lowercase(); if (_n in cmakeVendoredLibs) return@forEach; res += ToolReq(_n, null, p, Confidence.LOW)
         }
         return res
     }
