@@ -105,13 +105,13 @@ class GapDownloader(private val context: Context) {
                     ).let { if (normalized == null) it.copy(kind = Kind.NOT_DOWNLOADABLE) else it }
                 }
 
-                // gradlew：从仓库自身下载
+                // gradlew 本地无法直接下载：仓库里本就没有，须由 Gradle 重新生成
                 g.what.endsWith("gradlew") -> Item(
                     what = g.what,
-                    kind = Kind.FILE,
-                    url = "https://raw.githubusercontent.com/$owner/$repo/$branch/${g.what}",
+                    kind = Kind.NOT_DOWNLOADABLE,
+                    url = null,
                     target = g.what,
-                    note = "从仓库自身下载 ${g.what}"
+                    note = "gradlew 仓库里已被 .gitignore，无法下载。请在 Termux 执行 `gradle wrapper` 重新生成，或让 CI 用系统 gradle"
                 )
 
                 // 锁文件类：必须由包管理器生成
