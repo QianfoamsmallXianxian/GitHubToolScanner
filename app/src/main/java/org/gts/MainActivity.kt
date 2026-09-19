@@ -385,14 +385,6 @@ fun App() {
                 }
 
                 1 -> LazyColumn(Modifier.weight(1f)) {
-                    item {
-                        Button(onClick = {
-                            val sb = StringBuilder()
-                            actions.forEach { sb.appendLine(it.command) }
-                            saveText("termux-fix.sh", sb.toString())
-                        }) { Text("保存 Termux 补齐脚本") }
-                        Spacer(Modifier.height(8.dp))
-                    }
                     items(actions) { a ->
                         ListItem(
                             colors = ListItemDefaults.colors(containerColor = Color.White),
@@ -412,15 +404,9 @@ fun App() {
                             color = Color(0xFF2E7D32))
                     } else {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { saveText("fix-gaps.sh", gapFixScript()) }) {
-                                Text("保存脚本")
-                            }
                             Button(onClick = { doDownloadGaps() }, enabled = !dlBusy) {
                                 Text(if (dlBusy) "下载中…" else "直接下载")
                             }
-                            OutlinedButton(onClick = {
-                                termux.runDetached(gapFixScript())
-                            }) { Text("Termux") }
                         }
                         Spacer(Modifier.height(8.dp))
                         if (dlLog.isNotBlank()) {
@@ -474,11 +460,6 @@ fun App() {
                     }
                     Spacer(Modifier.height(8.dp))
 
-                    OutlinedTextField(
-                        value = buildCmd, onValueChange = { buildCmd = it; regenerate() },
-                        label = { Text("构建命令（自动推断，可改）") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
                     if (buildReason.isNotBlank()) {
                         Text("推断依据：" + buildReason,
                             style = MaterialTheme.typography.bodySmall, color = Color(0xFF2E7D32))
@@ -499,14 +480,11 @@ fun App() {
                     if (genYaml.isNotBlank()) {
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { saveText("build.yml", genYaml) }) {
-                                Text("保存 build.yml")
+                            Button(onClick = { saveText("gts-build.yml", genYaml) }) {
+                                Text("保存工作流 .yml")
                             }
-                            OutlinedButton(onClick = { saveText("setup.sh", genScript) }) {
-                                Text("保存 setup.sh")
-                            }
-                            Button(onClick = { doPushWorkflow() }, enabled = !pushBusy) {
-                                Text(if (pushBusy) "推送中…" else "推送到 Actions")
+                            OutlinedButton(onClick = { doPushWorkflow() }, enabled = !pushBusy) {
+                                Text(if (pushBusy) "写入中…" else "写入仓库 Actions")
                             }
                         }
                         if (pushLog.isNotBlank()) {
