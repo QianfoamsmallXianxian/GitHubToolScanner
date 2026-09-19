@@ -1,5 +1,8 @@
 package org.gts
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -19,6 +22,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -55,6 +59,18 @@ class MainActivity : ComponentActivity() {
         run {
             window.statusBarColor = android.graphics.Color.TRANSPARENT
             window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        }
+
+        // API 28 及以下写公共 Download 目录需要运行时权限；29+ 走 MediaStore 不需要。
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            val granted = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                requestPermissions(
+                    arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 1001
+                )
+            }
         }
 
         setContent {
@@ -202,7 +218,7 @@ fun App() {
         val c = termCmd.trim()
         if (c.isEmpty() || termBusy) return
         termBusy = true
-        termHistory = termHistory + ("$ " + c)
+        termHistory = termHistory + ("\$ " + c)
         scope.launch {
             val r = LocalShell.run(c)
             val chunk = buildString {
