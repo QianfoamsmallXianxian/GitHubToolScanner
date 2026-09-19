@@ -7,6 +7,26 @@ import org.json.JSONObject
 object Parsers {
 
     /** CMake find_package 里这些名字在多数项目里是仓库自带源码，不算外部依赖 */
+
+    /** apt/apk 包名 -> 规范工具名。避免把包名误当工具名报「未映射」。 */
+    private val aptToTool = mapOf(
+        "ninja-build" to "ninja",
+        "build-essential" to "make",
+        "gcc" to "make", "g++" to "make", "clang" to "make",
+        "openjdk-8-jdk" to "jdk", "openjdk-11-jdk" to "jdk",
+        "openjdk-17-jdk" to "jdk", "openjdk-21-jdk" to "jdk",
+        "default-jdk" to "jdk",
+        "python3" to "python", "python3-pip" to "python", "python3-dev" to "python",
+        "pkgconf" to "pkg-config",
+        "libsdl2-dev" to "sdl2", "libsdl2-ttf-dev" to "sdl2_ttf",
+        "libsdl3-dev" to "libsdl3-dev", "libsdl3-ttf-dev" to "libsdl3-ttf-dev"
+    )
+
+    /** 把 apt 包名归一成工具名；无法识别时返回原名 */
+    private fun normPkg(pkg: String): String {
+        val n = pkg.lowercase().trim()
+        return aptToTool[n] ?: n
+    }
     private val cmakeVendoredLibs = setOf(
         "imgui", "imgui_ext", "imgui_internal", "imguifiledialog",
         "sdl", "sdl2", "sdl3", "sdl3_ttf", "sdl3_image", "sdl3_mixer", "sdl3_net"
@@ -150,7 +170,7 @@ object Parsers {
         Regex("""(?:apk add|apt-get install)([^\n&|]+)""").findAll(c).forEach { m ->
             m.groupValues[1].trim().split(Regex("\\s+")).forEach { pkg ->
                 if (pkg.isNotBlank() && !pkg.startsWith("-"))
-                    res += ToolReq(pkg, null, p, Confidence.MEDIUM)
+                    res += ToolReq(normPkg(pkg), null, p, Confidence.MEDIUM)
             }
         }
         return res
@@ -188,7 +208,7 @@ object Parsers {
         Regex("""(?:apt-get install|apk add)([^\n&|]+)""").findAll(c).forEach { m ->
             m.groupValues[1].trim().split(Regex("\\s+")).forEach { pkg ->
                 if (pkg.isNotBlank() && !pkg.startsWith("-"))
-                    res += ToolReq(pkg, null, p, Confidence.HIGH)
+                    res += ToolReq(normPkg(pkg), null, p, Confidence.HIGH)
             }
         }
         return res
