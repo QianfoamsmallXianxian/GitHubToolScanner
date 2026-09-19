@@ -1,71 +1,73 @@
 package org.gts.util
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.util.concurrent.TimeUnit
 
 /**
- * App 内嵌终端用的本地 shell。
+ * 内嵌 shell。只用于只读/轻量命令。
  *
- * 用 ProcessBuilder 直接起 /system/bin/sh，不依赖 Termux。
- * 注意：受 Android 沙箱限制，app 的 UID 只能做有限的事：
- *   - 能读 /proc、能跑 /system/bin 下的工具（ls、cat、echo、curl 等）
- *   - 不能装包、不能改系统目录、不能访问别的 app 的私有目录
- * 需要装包时仍要走 Termux。
+ * 注意：/storage/emulated 是 noexec 挂载，无法在那里执行脚本文件。
+ * 需要装包或改系统目录时，必须走 Termux。
  */
 object LocalShell {
 
-    data class Output(
-        val stdout: String,
-        val stderr: String,
-        val exitCode: Int
+    data class Result(val stdout: String, val stderr: String, val exitCode: Int)
+
+    /** 明显应该走 Termux 的命令前缀 */
+    private val termuxOnly = listOf(
+        "pkg ", "apt ", "apt-get ", "sdkmanager", "gradle ", "./gradlew",
+        "chmod ", "chown ", "mount ", "su ", "sudo "
     )
 
-    suspend fun run(command: String, timeoutMs: Long = 20000): Output =
-        withContext(Dispatchers.IO) {
-            try {
-                val pb = ProcessBuilder("/system/bin/sh", "-c", command)
-                pb.redirectErrorStream(false)
-                pb.environment()["PATH"] =
-                    "/system/bin:/system/xbin:/vendor/bin:/data/local/tmp"
-                val proc = pb.start()
+    /** 判断是否应该拒绝执行并提示改用 Termux */
+    fun shouldUseTermux(cmd: String): String? {
+        val c = cmd.trim()
+        if (c.isEmpty()) return null
 
-                val outText = StringBuilder()
-                val errText = StringBuilder()
-
-                val outThread = Thread {
-                    runCatching {
-                        BufferedReader(InputStreamReader(proc.inputStream)).use { r ->
-                            r.forEachLine { outText.appendLine(it) }
-                        }
-                    }
-                }
-                val errThread = Thread {
-                    runCatching {
-                        BufferedReader(InputStreamReader(proc.errorStream)).use { r ->
-                            r.forEachLine { errText.appendLine(it) }
-                        }
-                    }
-                }
-                outThread.start(); errThread.start()
-
-                val finished = proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
-                if (!finished) {
-                    proc.destroyForcibly()
-                    outThread.join(500); errThread.join(500)
-                    return@withContext Output(
-                        outText.toString(),
-                        errText.toString() + "\n[超时 ${timeoutMs}ms，已强制结束]",
-                        -1
-                    )
-                }
-                outThread.join(1000); errThread.join(1000)
-
-                Output(outText.toString(), errText.toString(), proc.exitValue())
-            } catch (e: Exception) {
-                Output("", "${e.javaClass.simpleName}: ${e.message}", -1)
+        // 直接执行 .sh 文件 → noexec 会失败
+        val first = c.split(Regex("\\s+")).firstOrNull().orEmpty()
+        if (first.endsWith(".sh")) {
+            return "这是脚本文件。/storage/emulated 是 noexec 分区，无法直接执行。请在 Termux 中运行，或用下载功能补齐文件。"
+        }
+        termuxOnly.forEach { p ->
+            if (c.startsWith(p)) {
+                return "该命令需要 Termux 环境（内嵌 shell 没有包管理器）。"
             }
         }
+        return null
+    }
+
+    fun run(cmd: String, timeoutMs: Long = 15000): Result {
+        return try {
+            val pb = ProcessBuilder("/system/bin/sh", "-c", cmd)
+            pb.redirectErrorStream(false)
+            val p = pb.start()
+
+            val out = StringBuilder()
+            val err = StringBuilder()
+
+            val tOut = Thread {
+                BufferedReader(InputStreamReader(p.inputStream)).use { r ->
+                    r.forEachLine { out.appendLine(it) }
+                }
+            }
+            val tErr = Thread {
+                BufferedReader(InputStreamReader(p.errorStream)).use { r ->
+                    r.forEachLine { err.appendLine(it) }
+                }
+            }
+            tOut.start(); tErr.start()
+
+            val finished = p.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            if (!finished) {
+                p.destroyForcibly()
+                return Result(out.toString(), err.toString() + "\n(超时，已终止)", -1)
+            }
+            tOut.join(1000); tErr.join(1000)
+
+            Result(out.toString(), err.toString(), p.exitValue())
+        } catch (e: Exception) {
+            Result("", e.message ?: "执行失败", -1)
+        }
+    }
 }
