@@ -122,7 +122,7 @@ fun App() {
     var busy by remember { mutableStateOf(false) }
     var tab by remember { mutableIntStateOf(0) }
 
-    var target by remember { mutableStateOf(CiTarget.LINUX) }
+    var targets by remember { mutableStateOf(setOf(CiTarget.LINUX)) }
     var buildCmd by remember { mutableStateOf("") }
     var useSubmodules by remember { mutableStateOf(false) }
     var genYaml by remember { mutableStateOf("") }
@@ -176,21 +176,39 @@ fun App() {
                 statuses = cmp
                 actions = FixPlanner().plan(cmp)
 
-                val plan = WorkflowGenerator().generate(
-                    parsed, target, det.command, useSubmodules, result.files, gaps
-                )
-                genYaml = plan.yaml
-                unresolved = plan.unresolved
-                genScript = ScriptGenerator().generate(
-                    plan.classified, target, det.command, useSubmodules
-                )
+                for (t in targets) {
+                    val plan = WorkflowGenerator().generate(parsed, t, det.command, useSubmodules, result.files, gaps)
+                    genYaml = plan.yaml
+                    unresolved = plan.unresolved
+                    genScript = ScriptGenerator().generate(plan.classified, t, det.command, useSubmodules)
+                }
 
                 val blockers = gaps.count { it.severity == ModuleGapDetector.Severity.BLOCKER }
-                log = "树 " + result.tree.size + " 项 · 声明文件 " + result.files.size +
+                var msg = "树 " + result.tree.size + " 项 · 声明文件 " + result.files.size +
                     " · 工具 " + parsed.size +
                     (if (blockers > 0) " · 缺失模块 " + blockers + " 个" else "") +
+                    (if (useSubmodules) " · 含子模块" else "") +
                     (if (!termux.isInstalled()) " · 未检测到 Termux" else "")
                 tab = if (blockers > 0) 3 else 2
+
+                if (token.isNotBlank() && url.isNotBlank()) {
+                    val slug = RepoScanner(null).parseSlug(url)
+                    val ownerRepo = slug.first + "/" + slug.second
+                    val sb = StringBuilder()
+                    var ok = 0
+                    for (t in targets) {
+                        val plan = WorkflowGenerator().generate(parsed, t, det.command, useSubmodules, result.files, gaps)
+                        val fn = "gts-build-" + t.name.lowercase() + ".yml"
+                        val r = WorkflowPusher(token).push(ownerRepo, fn, plan.yaml)
+                        sb.appendLine((if (r.ok) "[OK] " else "[X] ") + fn + " - " + r.message)
+                        if (r.ok) ok++
+                    }
+                    pushLog = sb.toString().trimEnd()
+                    msg = msg + " · 已写入 " + ok + "/" + targets.size + " 个平台工作流"
+                } else {
+                    msg = msg + " · 未填 Token，仅生成不写入"
+                }
+                log = msg
             } catch (e: Exception) {
                 log = "失败：" + e.message
             } finally { busy = false }
@@ -199,10 +217,10 @@ fun App() {
 
     fun regenerate() {
         if (reqs.isEmpty()) return
-        val plan = WorkflowGenerator().generate(reqs, target, buildCmd, useSubmodules, files, gaps)
+        val plan = WorkflowGenerator().generate(reqs, targets.firstOrNull() ?: CiTarget.LINUX, buildCmd, useSubmodules, files, gaps)
         genYaml = plan.yaml
         unresolved = plan.unresolved
-        genScript = ScriptGenerator().generate(plan.classified, target, buildCmd, useSubmodules)
+        genScript = ScriptGenerator().generate(plan.classified, targets.firstOrNull() ?: CiTarget.LINUX, buildCmd, useSubmodules)
     }
 
     fun gapFixScript(): String {
@@ -235,7 +253,7 @@ fun App() {
                 val slug = RepoScanner(null).parseSlug(url)
                 val ownerRepo = slug.first + "/" + slug.second
                 val r = WorkflowPusher(token).push(
-                    ownerRepo, "gts-build-" + target.name.lowercase() + ".yml", genYaml
+                    ownerRepo, "gts-build-" + (targets.firstOrNull() ?: CiTarget.LINUX).name.lowercase() + ".yml", genYaml
                 )
                 pushLog = if (r.ok) {
                     r.message + (r.htmlUrl?.let { "\n" + it } ?: "")
@@ -279,8 +297,7 @@ fun App() {
                 val sb = StringBuilder()
                 var okCount = 0
                 var lastClassified: WorkflowGenerator.Classified? = null
-                for (t in CiTarget.entries) {
-                    target = t
+                for (t in targets) {
                     val plan = WorkflowGenerator().generate(parsed, t, det.command, useSubmodules, result.files, gaps)
                     lastClassified = plan.classified
                     genYaml = plan.yaml
@@ -291,10 +308,10 @@ fun App() {
                     if (r.ok) okCount++
                 }
                 lastClassified?.let {
-                    genScript = ScriptGenerator().generate(it, target, det.command, useSubmodules)
+                    genScript = ScriptGenerator().generate(it, targets.firstOrNull() ?: CiTarget.LINUX, det.command, useSubmodules)
                 }
                 pushLog = sb.toString().trimEnd()
-                log = "全自动完成：" + okCount + "/" + CiTarget.entries.size + " 个平台工作流已写入仓库"
+                log = "全自动完成：" + okCount + "/" + targets.size + " 个平台工作流已写入仓库"
                 tab = 2
             } catch (e: Exception) {
                 log = "全自动失败：" + e.message
@@ -506,8 +523,8 @@ fun App() {
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         CiTarget.entries.forEach { t ->
                             FilterChip(
-                                selected = target == t,
-                                onClick = { target = t; regenerate() },
+                                selected = t in targets,
+                                onClick = { targets = if (t in targets) targets - t else targets + t; if (targets.isEmpty()) targets = setOf(t); regenerate() },
                                 label = { Text(t.label) }
                             )
                         }
@@ -519,11 +536,12 @@ fun App() {
                             style = MaterialTheme.typography.bodySmall, color = Color(0xFF2E7D32))
                     }
                     Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = useSubmodules,
-                            onCheckedChange = { useSubmodules = it; regenerate() })
-                        Text("递归初始化子模块")
-                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (useSubmodules) "已自动识别子模块，工作流将递归初始化" else "未发现子模块",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (useSubmodules) Color(0xFF2E7D32) else Color(0xFF888888)
+                    )
 
                     if (unresolved.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
@@ -534,7 +552,7 @@ fun App() {
                     if (genYaml.isNotBlank()) {
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { saveText("gts-build-" + target.name.lowercase() + ".yml", genYaml) }) {
+                            Button(onClick = { saveText("gts-build-" + (targets.firstOrNull() ?: CiTarget.LINUX).name.lowercase() + ".yml", genYaml) }) {
                                 Text("保存工作流 .yml")
                             }
                             OutlinedButton(onClick = { doPushWorkflow() }, enabled = !pushBusy) {
@@ -548,7 +566,7 @@ fun App() {
                                 color = Color(0xFF1565C0))
                         }
                         Spacer(Modifier.height(8.dp))
-                        Text("gts-build-" + target.name.lowercase() + ".yml 预览", style = MaterialTheme.typography.labelLarge)
+                        Text("gts-build-" + (targets.firstOrNull() ?: CiTarget.LINUX).name.lowercase() + ".yml 预览", style = MaterialTheme.typography.labelLarge)
                         LazyColumn(Modifier.weight(1f)) {
                             item {
                                 Text(genYaml, style = MaterialTheme.typography.bodySmall
