@@ -1,7 +1,7 @@
 package org.gts.gen
 
 /**
- * B8 修复：改为接收已算好的 Classified，不再内部 new WorkflowGenerator 重算。
+ * 接收已算好的 Classified，不再内部 new WorkflowGenerator 重算。
  */
 class ScriptGenerator {
 
@@ -22,6 +22,7 @@ class ScriptGenerator {
 
         if (c.sysPkgs.isNotEmpty()) {
             sb.appendLine("echo '==> 安装系统包'")
+            // 必须覆盖 PkgManager 的全部取值，否则 when 不是穷尽的。
             when (target.pkg) {
                 PkgManager.APT -> {
                     sb.appendLine("sudo apt-get update -qq")
@@ -29,6 +30,10 @@ class ScriptGenerator {
                 }
                 PkgManager.BREW -> {
                     sb.appendLine("brew install ${c.sysPkgs.joinToString(" ")}")
+                }
+                PkgManager.CHOCO -> {
+                    sb.appendLine("# Windows 目标请用 PowerShell 执行：")
+                    sb.appendLine("# choco install ${c.sysPkgs.joinToString(" ")} -y --no-progress")
                 }
             }
             sb.appendLine()
@@ -38,6 +43,12 @@ class ScriptGenerator {
             sb.appendLine("# 以下工具在本脚本中不自动安装，需手工处理：")
             c.setupSteps.forEach { sb.appendLine("#   " + it.trim().lines().first()) }
             c.specialSteps.forEach { sb.appendLine("#   " + it.trim().lines().first()) }
+            sb.appendLine()
+        }
+
+        if (c.sdkPackages.isNotEmpty()) {
+            sb.appendLine("# Android SDK 组件（需已装 sdkmanager）：")
+            sb.appendLine("# sdkmanager ${c.sdkPackages.joinToString(" ") { "\"$it\"" }}")
             sb.appendLine()
         }
 
