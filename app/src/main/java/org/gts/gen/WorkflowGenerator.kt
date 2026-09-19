@@ -16,7 +16,7 @@ enum class PkgManager { APT, BREW, CHOCO }
  * 是 glibc 构建，跑不起来。
  */
 enum class CiTarget(val runner: String, val pkg: PkgManager, val label: String) {
-    UBUNTU("ubuntu-latest", PkgManager.APT, "Ubuntu (apt)"),
+    UBUNTU("ubuntu-latest", PkgManager.APT, "Linux (apt)"),
     ANDROID("ubuntu-latest", PkgManager.APT, "Android APK"),
     WINDOWS("windows-latest", PkgManager.CHOCO, "Windows"),
     MACOS("macos-latest", PkgManager.BREW, "macOS (brew)");
