@@ -17,6 +17,56 @@ object ModuleGapDetector {
 
     enum class Severity { BLOCKER, WARNING, INFO }
 
+    /**
+     * 常见第三方依赖：目录名 -> (是什么, 去哪拿)。
+     *
+     * 这些既不是子模块也不是仓库自己的文件，而是通用的外部库。
+     * 光说「检查是否漏了子模块」没用，得告诉用户具体怎么获取。
+     */
+    private val knownDeps: Map<String, Pair<String, String>> = mapOf(
+        "sdl2" to ("Simple DirectMedia Layer 2" to
+            "git clone https://github.com/libsdl-org/SDL.git -b SDL2 SDL2"),
+        "sdl3" to ("Simple DirectMedia Layer 3" to
+            "git clone https://github.com/libsdl-org/SDL.git -b main SDL3"),
+        "imgui" to ("Dear ImGui" to
+            "git clone https://github.com/ocornut/imgui.git imgui"),
+        "directx" to ("DirectX SDK / headers" to
+            "Windows SDK 自带；Linux/macOS 用不到，CMake 里应加平台判断"),
+        "glfw" to ("GLFW" to
+            "git clone https://github.com/glfw/glfw.git glfw"),
+        "glew" to ("GLEW" to
+            "git clone https://github.com/nigels-com/glew.git glew"),
+        "glm" to ("OpenGL Mathematics" to
+            "git clone https://github.com/g-truc/glm.git glm"),
+        "freetype" to ("FreeType" to
+            "git clone https://github.com/freetype/freetype.git freetype"),
+        "box2d" to ("Box2D" to
+            "git clone https://github.com/erincatto/box2d.git box2d"),
+        "bullet" to ("Bullet Physics" to
+            "git clone https://github.com/bulletphysics/bullet3.git bullet3"),
+        "assimp" to ("Open Asset Import Library" to
+            "git clone https://github.com/assimp/assimp.git assimp"),
+        "ffmpeg" to ("FFmpeg" to
+            "git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg"),
+        "spdlog" to ("spdlog" to
+            "git clone https://github.com/gabime/spdlog.git spdlog"),
+        "fmt" to ("{fmt}" to
+            "git clone https://github.com/fmtlib/fmt.git fmt"),
+        "json" to ("nlohmann/json" to
+            "git clone https://github.com/nlohmann/json.git json"),
+        "lua" to ("Lua" to
+            "git clone https://github.com/lua/lua.git lua"),
+        "zlib" to ("zlib" to
+            "git clone https://github.com/madler/zlib.git zlib")
+    )
+
+    /** 按目录名查已知外部依赖 */
+    private fun lookupDep(dirName: String): Pair<String, String>? {
+        val n = dirName.lowercase().trimEnd('/')
+        return knownDeps[n]
+            ?: knownDeps.entries.firstOrNull { n.startsWith(it.key) }?.value
+    }
+
     fun detect(scan: RepoScanner.ScanResult): List<Gap> {
         val gaps = mutableListOf<Gap>()
         val allPaths = scan.tree.map { it.path }
@@ -25,7 +75,7 @@ object ModuleGapDetector {
         val files = scan.files
 
         // ---- 子模块 ----
-        // 注意：GitHub Trees API 里，已提交的子模块是 type="commit" 的单条目，
+        // GitHub Trees API 里，已提交的子模块是 type="commit" 的单条目，
         // 路径就是子模块名本身（如 ext/glslang），没有尾部斜杠。
         // 所以必须把「条目本身存在」也算作内容存在，否则每个正常子模块都会被误报。
         files[".gitmodules"]?.let { gm ->
@@ -75,12 +125,30 @@ object ModuleGapDetector {
                     val exists = target in dirs || target in paths ||
                         allPaths.any { it.startsWith("$target/") }
                     if (!exists) {
-                        gaps += Gap(
-                            what = target,
-                            why = "$cmPath 里 add_subdirectory($r)，但该目录不存在",
-                            fix = "检查是否漏了子模块，或该目录被 .gitignore 排除",
-                            severity = Severity.BLOCKER
-                        )
+                        val dirName = r.trimEnd('/').substringAfterLast('/')
+                        val dep = lookupDep(dirName)
+                        if (dep != null) {
+                            // 已知第三方库：给出具体获取方式
+                            gaps += Gap(
+                                what = target,
+                                why = "$cmPath 里 add_subdirectory($r)，" +
+                                      "该目录不存在。$r 是外部依赖（${dep.first}），" +
+                                      "仓库没有把它作为子模块提交",
+                                fix = dep.second + "\n" +
+                                      "    （放好后再跑一次扫描）",
+                                severity = Severity.BLOCKER
+                            )
+                        } else {
+                            gaps += Gap(
+                                what = target,
+                                why = "$cmPath 里 add_subdirectory($r)，但该目录不存在",
+                                fix = "三种可能：\n" +
+                                      "    1) 是外部库 -> 手动 clone 到该目录\n" +
+                                      "    2) 是子模块 -> git submodule update --init --recursive\n" +
+                                      "    3) 被 .gitignore 排除 -> 本地生成",
+                                severity = Severity.BLOCKER
+                            )
+                        }
                     }
                 }
         }
