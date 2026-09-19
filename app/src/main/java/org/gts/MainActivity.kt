@@ -149,71 +149,6 @@ fun App() {
         log = msg
     }
 
-    fun doScan() {
-        busy = true; log = ""; statuses = emptyList(); actions = emptyList()
-        gaps = emptyList(); genYaml = ""; genScript = ""; reqs = emptyList()
-        unresolved = emptyList(); buildReason = ""; files = emptyMap()
-        scope.launch {
-            try {
-                val result = withContext(Dispatchers.IO) {
-                    RepoScanner(token.ifBlank { null }).scan(url)
-                }
-                files = result.files
-                gaps = withContext(Dispatchers.Default) { ModuleGapDetector.detect(result) }
-                val det = withContext(Dispatchers.Default) {
-                    BuildCommandDetector.detect(result.files)
-                }
-                buildCmd = det.command
-                buildReason = det.reason
-                useSubmodules = result.files.containsKey(".gitmodules")
-
-                val parsed = withContext(Dispatchers.Default) { Parsers.parseAll(result.files) }
-                reqs = parsed
-                val probed = withContext(Dispatchers.IO) {
-                    if (termux.isInstalled()) EnvComparator(termux).probeAll() else emptyMap()
-                }
-                val cmp = EnvComparator(termux).compare(parsed, probed)
-                statuses = cmp
-                actions = FixPlanner().plan(cmp)
-
-                for (t in targets) {
-                    val plan = WorkflowGenerator().generate(parsed, t, det.command, useSubmodules, result.files, gaps)
-                    genYaml = plan.yaml
-                    unresolved = plan.unresolved
-                    genScript = ScriptGenerator().generate(plan.classified, t, det.command, useSubmodules)
-                }
-
-                val blockers = gaps.count { it.severity == ModuleGapDetector.Severity.BLOCKER }
-                var msg = "树 " + result.tree.size + " 项 · 声明文件 " + result.files.size +
-                    " · 工具 " + parsed.size +
-                    (if (blockers > 0) " · 缺失模块 " + blockers + " 个" else "") +
-                    (if (useSubmodules) " · 含子模块" else "") +
-                    (if (!termux.isInstalled()) " · 未检测到 Termux" else "")
-                tab = if (blockers > 0) 3 else 2
-
-                if (token.isNotBlank() && url.isNotBlank()) {
-                    val slug = RepoScanner(null).parseSlug(url)
-                    val ownerRepo = slug.first + "/" + slug.second
-                    val sb = StringBuilder()
-                    var ok = 0
-                    for (t in targets) {
-                        val plan = WorkflowGenerator().generate(parsed, t, det.command, useSubmodules, result.files, gaps)
-                        val fn = "gts-build-" + t.name.lowercase() + ".yml"
-                        val r = WorkflowPusher(token).push(ownerRepo, fn, plan.yaml)
-                        sb.appendLine((if (r.ok) "[OK] " else "[X] ") + fn + " - " + r.message)
-                        if (r.ok) ok++
-                    }
-                    pushLog = sb.toString().trimEnd()
-                    msg = msg + " · 已写入 " + ok + "/" + targets.size + " 个平台工作流"
-                } else {
-                    msg = msg + " · 未填 Token，仅生成不写入"
-                }
-                log = msg
-            } catch (e: Exception) {
-                log = "失败：" + e.message
-            } finally { busy = false }
-        }
-    }
 
     fun regenerate() {
         if (reqs.isEmpty()) return
@@ -274,6 +209,7 @@ fun App() {
         busy = true
         pushLog = ""
         log = "全自动：扫描中…"
+        unresolved = emptyList()
         scope.launch {
             try {
                 val result = withContext(Dispatchers.IO) { RepoScanner(token).scan(url) }
@@ -297,18 +233,20 @@ fun App() {
                 val sb = StringBuilder()
                 var okCount = 0
                 var lastClassified: WorkflowGenerator.Classified? = null
+                var lastTarget = targets.firstOrNull() ?: CiTarget.LINUX
                 for (t in targets) {
                     val plan = WorkflowGenerator().generate(parsed, t, det.command, useSubmodules, result.files, gaps)
                     lastClassified = plan.classified
+                    lastTarget = t
                     genYaml = plan.yaml
-                    unresolved = plan.unresolved
+                    unresolved = (unresolved + plan.unresolved).distinct()
                     val fileName = "gts-build-" + t.name.lowercase() + ".yml"
                     val r = WorkflowPusher(token).push(ownerRepo, fileName, plan.yaml)
                     sb.appendLine((if (r.ok) "[OK] " else "[X] ") + fileName + " - " + r.message)
                     if (r.ok) okCount++
                 }
                 lastClassified?.let {
-                    genScript = ScriptGenerator().generate(it, targets.firstOrNull() ?: CiTarget.LINUX, det.command, useSubmodules)
+                    genScript = ScriptGenerator().generate(it, lastTarget, det.command, useSubmodules)
                 }
                 pushLog = sb.toString().trimEnd()
                 log = "全自动完成：" + okCount + "/" + targets.size + " 个平台工作流已写入仓库"
