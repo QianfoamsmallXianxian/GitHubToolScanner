@@ -256,14 +256,6 @@ fun App() {
         if (c.isEmpty() || termBusy) return
         termBusy = true
         termHistory = termHistory + ("\$ " + c)
-            val block = LocalShell.shouldUseTermux(c)
-            if (block != null) {
-                termHistory = termHistory + block + "\n[已阻止]"
-                termOut = termHistory.joinToString("\n")
-                termBusy = false
-                termCmd = ""
-                return
-            }
         scope.launch {
             val r = LocalShell.run(c)
             val chunk = buildString {
