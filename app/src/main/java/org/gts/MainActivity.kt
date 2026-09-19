@@ -82,6 +82,7 @@ fun App() {
     var statuses by remember { mutableStateOf<List<Status>>(emptyList()) }
     var actions by remember { mutableStateOf<List<FixAction>>(emptyList()) }
     var gaps by remember { mutableStateOf<List<ModuleGapDetector.Gap>>(emptyList()) }
+    var files by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var log by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var tab by remember { mutableIntStateOf(0) }
@@ -98,13 +99,14 @@ fun App() {
     fun doScan() {
         busy = true; log = ""; statuses = emptyList(); actions = emptyList()
         gaps = emptyList(); genYaml = ""; genScript = ""; reqs = emptyList()
-        unresolved = emptyList(); buildReason = ""; treeCount = 0
+        unresolved = emptyList(); buildReason = ""; treeCount = 0; files = emptyMap()
         scope.launch {
             try {
                 val result = withContext(Dispatchers.IO) {
                     RepoScanner(token.ifBlank { null }).scan(url)
                 }
                 treeCount = result.tree.size
+                files = result.files
 
                 // 缺失模块检测
                 gaps = withContext(Dispatchers.Default) { ModuleGapDetector.detect(result) }
@@ -125,7 +127,7 @@ fun App() {
                 statuses = cmp
                 actions = FixPlanner().plan(cmp)
 
-                val plan = WorkflowGenerator().generate(parsed, target, det.command, useSubmodules)
+                val plan = WorkflowGenerator().generate(parsed, target, det.command, useSubmodules, result.files)
                 genYaml = plan.yaml
                 unresolved = plan.unresolved
                 genScript = ScriptGenerator().generate(
@@ -147,7 +149,7 @@ fun App() {
 
     fun regenerate() {
         if (reqs.isEmpty()) return
-        val plan = WorkflowGenerator().generate(reqs, target, buildCmd, useSubmodules)
+        val plan = WorkflowGenerator().generate(reqs, target, buildCmd, useSubmodules, files)
         genYaml = plan.yaml
         unresolved = plan.unresolved
         genScript = ScriptGenerator().generate(plan.classified, target, buildCmd, useSubmodules)
