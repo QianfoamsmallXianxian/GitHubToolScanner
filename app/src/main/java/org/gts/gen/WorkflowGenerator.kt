@@ -3,27 +3,6 @@ package org.gts.gen
 import org.gts.model.Confidence
 import org.gts.model.ToolReq
 
-enum class PkgManager { APT, BREW, CHOCO }
-
-/**
- * 目标平台。
- *
- * UBUNTU / MACOS：通用原生构建
- * ANDROID：Android APK，走 ubuntu runner + SDK/NDK + Gradle
- * WINDOWS：windows runner + choco + MSBuild/CMake
- *
- * 曾经有 ALPINE，已移除：alpine 容器里 actions/checkout 依赖的 node20
- * 是 glibc 构建，跑不起来。
- */
-enum class CiTarget(val runner: String, val pkg: PkgManager, val label: String) {
-    UBUNTU("ubuntu-latest", PkgManager.APT, "Linux (apt)"),
-    ANDROID("ubuntu-latest", PkgManager.APT, "Android APK"),
-    WINDOWS("windows-latest", PkgManager.CHOCO, "Windows"),
-    MACOS("macos-latest", PkgManager.BREW, "macOS (brew)");
-
-    val isAndroid get() = this == ANDROID
-    val isWindows get() = this == WINDOWS
-}
 
 class WorkflowGenerator {
 
@@ -357,6 +336,7 @@ class WorkflowGenerator {
             c.specialSteps.forEach { appendLine(it); appendLine() }
 
             // Android SDK 组件
+            if (c.needsAndroidSdk && target.pkg == PkgManager.APT) {
                 appendLine("      - name: Install Android SDK components")
                 appendLine("        run: |")
                 appendLine("          SDKMANAGER=\$(command -v sdkmanager || find \"\$ANDROID_SDK_ROOT\" -name sdkmanager 2>/dev/null | head -1)")
