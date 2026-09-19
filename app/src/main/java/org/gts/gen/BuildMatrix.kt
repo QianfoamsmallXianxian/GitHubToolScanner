@@ -31,7 +31,8 @@ object BuildMatrix {
         return when {
             target.isAndroid -> android(paths)
             target.isWindows -> windows(paths)
-            else -> native(target, paths)
+            target.isMacOS -> macos(target, paths)
+            else -> linux(paths)
         }
     }
 
@@ -42,7 +43,11 @@ object BuildMatrix {
         val root = if (inAndroidDir) "android" else ""
         val gradlew = if (root.isEmpty()) "gradlew" else "$root/gradlew"
 
-        val pre = if (hasWrapper) listOf("chmod +x $gradlew") else emptyList()
+        val pre = mutableListOf<String>()
+        // 产物目录先建好，避免后续找不到
+        if (hasWrapper) pre += "chmod +x $gradlew"
+
+        // 有 wrapper 用 wrapper，没有就用系统 gradle（WorkflowGenerator 会 setup-gradle）
         val build = if (hasWrapper) {
             if (root.isEmpty()) "./$gradlew assembleDebug --no-daemon"
             else "cd $root && ./gradlew assembleDebug --no-daemon"
@@ -66,9 +71,10 @@ object BuildMatrix {
     private fun windows(paths: Set<String>): Cfg {
         val sln = paths.firstOrNull { it.endsWith(".sln") }
         val cmake = paths.firstOrNull { it.endsWith("CMakeLists.txt") }
+        val csproj = paths.firstOrNull { it.endsWith(".csproj") }
         return when {
             sln != null -> {
-                // Windows 路径用反斜杠；用普通字符串拼接，避免转义地狱
+                // Windows 路径用反斜杠
                 val winPath = sln.replace("/", "\\")
                 val cmd = "msbuild \"" + winPath + "\" /p:Configuration=Release /m"
                 Cfg(
@@ -89,25 +95,92 @@ object BuildMatrix {
                 artifacts = listOf("build/**/*.exe", "build/**/*.dll"),
                 artifactName = "windows-build"
             )
+            csproj != null -> Cfg(
+                commands = listOf("dotnet build -c Release"),
+                artifacts = listOf("**/bin/Release/**/*.dll", "**/bin/Release/**/*.exe"),
+                artifactName = "windows-build"
+            )
             else -> Cfg(
-                commands = listOf("make -j4"),
-                artifacts = listOf("**/*.exe"),
+                // Windows 上没有 make。这里给明确失败提示，而不是生成跑不通的命令。
+                commands = listOf(
+                    "echo '未在仓库中找到 .sln / CMakeLists.txt / .csproj，无法确定构建方式'",
+                    "exit 1"
+                ),
+                artifacts = listOf("**/*.exe", "**/*.dll"),
                 artifactName = "windows-build"
             )
         }
     }
 
-    // ---------- Linux / macOS ----------
-    private fun native(target: CiTarget, paths: Set<String>): Cfg {
+    // ---------- macOS ----------
+    private fun macos(target: CiTarget, paths: Set<String>): Cfg {
         val hasBsh = paths.contains("b.sh")
         val hasCMake = paths.any { it.endsWith("CMakeLists.txt") }
+        val hasCargo = paths.any { it == "Cargo.toml" || it.endsWith("/Cargo.toml") }
+        val hasGo = paths.any { it == "go.mod" || it.endsWith("/go.mod") }
+        val hasSwift = paths.any { it == "Package.swift" }
+        val hasNpm = paths.any { it.endsWith("package.json") }
+        val hasXcode = paths.any { it.endsWith(".xcodeproj") || it.endsWith(".xcworkspace") }
+
+        val cmds = mutableListOf<String>()
+        val arts: List<String>
+
+        when {
+            hasXcode -> {
+                // xcodebuild 需要 scheme 名，这里只能给通用命令，用户需自行确认
+                cmds += "xcodebuild -configuration Release -derivedDataPath build"
+                arts = listOf("build/**/*.app", "build/**/*.dylib")
+            }
+            hasSwift -> {
+                cmds += "swift build -c release"
+                arts = listOf(".build/release/**")
+            }
+            hasBsh -> {
+                cmds += "./b.sh"
+                arts = listOf("build/**", "**/*.dylib", "**/*.a")
+            }
+            hasCMake -> {
+                cmds += "cmake -B build -DCMAKE_BUILD_TYPE=Release"
+                cmds += "cmake --build build --parallel"
+                arts = listOf("build/**", "**/*.dylib")
+            }
+            hasCargo -> {
+                cmds += "cargo build --release"
+                arts = listOf("target/release/**")
+            }
+            hasGo -> {
+                cmds += "go build ./..."
+                arts = listOf("**/*.bin", "**/*.out")
+            }
+            hasNpm -> {
+                cmds += "npm ci || npm install"
+                cmds += "npm run build --if-present"
+                arts = listOf("dist/**")
+            }
+            else -> {
+                cmds += "make -j4"
+                arts = listOf("**/*.dylib", "**/*.a", "**/*.bin")
+            }
+        }
+
+        return Cfg(
+            commands = cmds,
+            artifacts = arts,
+            artifactName = "macos-build"
+        )
+    }
+
+    // ---------- Linux ----------
+    private fun linux(paths: Set<String>): Cfg {
+        val hasBsh = paths.contains("b.sh")
+        val hasCMake = paths.any { it.endsWith("CMakeLists.txt") }
+        val hasMeson = paths.any { it == "meson.build" || it.endsWith("/meson.build") }
         val hasCargo = paths.any { it == "Cargo.toml" || it.endsWith("/Cargo.toml") }
         val hasGo = paths.any { it == "go.mod" || it.endsWith("/go.mod") }
         val hasGradle = paths.any {
             it.endsWith("build.gradle") || it.endsWith("build.gradle.kts")
         }
         val hasNpm = paths.any { it.endsWith("package.json") }
-        val hasMeson = paths.any { it == "meson.build" || it.endsWith("/meson.build") }
         val hasMakefile = paths.any { it == "Makefile" || it.endsWith("/Makefile") }
 
         val cmds = mutableListOf<String>()
@@ -115,6 +188,7 @@ object BuildMatrix {
 
         when {
             hasBsh -> {
+                cmds += "chmod +x b.sh"
                 cmds += "./b.sh"
                 arts = listOf("build/**", "**/*.so", "**/*.a")
             }
@@ -158,7 +232,7 @@ object BuildMatrix {
         return Cfg(
             commands = cmds,
             artifacts = arts,
-            artifactName = if (target.isWindows) "windows-build" else "native-build"
+            artifactName = "linux-build"
         )
     }
 }
