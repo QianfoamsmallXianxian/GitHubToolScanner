@@ -8,71 +8,102 @@ import android.provider.MediaStore
 import java.io.File
 
 /**
- * 把文本保存到 /storage/emulated/0/Download/gts-fix/。
+ * 统一的落盘入口。
  *
- * API 29+ 走 MediaStore.Downloads；写入前先删同名条目，保证是覆盖而不是堆积副本。
- * API 28 及以下直接写文件（需 WRITE_EXTERNAL_STORAGE 运行时权限）。
+ * 优先写公共 Download 目录：/storage/emulated/0/Download/gts-fix/<rel>
+ * 失败时回退 App 私有目录：/data/data/org.gts/files/<rel>
  *
- * 返回 null 表示成功，否则返回错误说明。
+ * 回退时会通过 returnedViaPrivate 告知调用方，避免用户以为文件在 Download。
  */
 object FileSaver {
 
-    const val SUB_DIR = "gts-fix"
+    private const val PUBLIC_ROOT = "gts-fix"
 
-    fun save(context: Context, fileName: String, content: String): String? {
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                deleteExisting(context, fileName)
-                saveViaMediaStore(context, fileName, content)
-            } else {
-                saveViaFile(fileName, content)
-            }
-            null
-        } catch (e: Exception) {
-            "${e.javaClass.simpleName}: ${e.message}"
-        }
-    }
+    /** 最近一次实际落盘位置，供 UI 显示 */
+    @Volatile
+    var lastLocation: String = ""
+        private set
+
+    fun displayPath(name: String): String =
+        "${Environment.getExternalStorageDirectory().absolutePath}/Download/$PUBLIC_ROOT/$name"
+
+    fun save(ctx: Context, name: String, content: String): String? =
+        saveBytes(ctx, name, content.toByteArray(Charsets.UTF_8))
 
     /**
-     * 删掉 Download/gts-fix 下同名旧条目。
-     * 不删的话 MediaStore 会自动改名成 "build (1).yml"，反复保存会堆积一堆副本。
+     * 保存任意字节。
+     * @return null 表示成功；非 null 是错误说明（且已回退私有目录也会说明）
      */
-    private fun deleteExisting(context: Context, fileName: String) {
-        runCatching {
-            val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
-            val selection = MediaStore.Downloads.DISPLAY_NAME + " = ? AND " +
-                MediaStore.Downloads.RELATIVE_PATH + " LIKE ?"
-            val args = arrayOf(fileName, "%" + SUB_DIR + "%")
-            context.contentResolver.delete(collection, selection, args)
+    fun saveBytes(ctx: Context, relPath: String, bytes: ByteArray): String? {
+        val safe = relPath.replace("\\", "/").split("/")
+            .filter { it.isNotBlank() && it != "." && it != ".." }
+            .joinToString("/")
+        if (safe.isBlank()) return "路径非法"
+
+        // 1) 公共目录
+        var publicErr: String? = null
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                saveViaMediaStore(ctx, safe, bytes)
+            } else {
+                saveViaFile(
+                    File(Environment.getExternalStorageDirectory(), "Download/$PUBLIC_ROOT/$safe"),
+                    bytes
+                )
+            }
+            lastLocation = "Download/$PUBLIC_ROOT/$safe"
+            return null
+        } catch (e: Exception) {
+            publicErr = e.message ?: e.javaClass.simpleName
+        }
+
+        // 2) 回退私有目录
+        return try {
+            saveViaFile(File(ctx.filesDir, safe), bytes)
+            lastLocation = "(私有) files/$safe"
+            // 成功但位置不同，明确告知
+            "已保存到 App 私有目录（公共目录不可写：$publicErr）"
+        } catch (e: Exception) {
+            "公共目录失败（$publicErr）；私有目录也失败（${e.message ?: e.javaClass.simpleName}）"
         }
     }
 
-    private fun saveViaMediaStore(context: Context, fileName: String, content: String) {
-        val resolver = context.contentResolver
+    private fun saveViaFile(f: File, bytes: ByteArray) {
+        f.parentFile?.mkdirs()
+        f.writeBytes(bytes)
+    }
+
+    private fun saveViaMediaStore(ctx: Context, relPath: String, bytes: ByteArray) {
+        val resolver = ctx.contentResolver
+        val name = relPath.substringAfterLast('/')
+        val sub = relPath.substringBeforeLast('/', "")
+        val relDir = if (sub.isEmpty())
+            Environment.DIRECTORY_DOWNLOADS + "/" + PUBLIC_ROOT
+        else
+            Environment.DIRECTORY_DOWNLOADS + "/" + PUBLIC_ROOT + "/" + sub
+
         val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-            put(MediaStore.Downloads.RELATIVE_PATH,
-                Environment.DIRECTORY_DOWNLOADS + "/" + SUB_DIR)
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, guessMime(name))
+            put(MediaStore.MediaColumns.RELATIVE_PATH, relDir)
+            // 已存在时覆盖，而不是报错
+            put(MediaStore.MediaColumns.IS_PENDING, 0)
         }
+
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: throw IllegalStateException("MediaStore 拒绝创建条目")
-        resolver.openOutputStream(uri, "wt")?.use { out ->
-            out.write(content.toByteArray(Charsets.UTF_8))
-            out.flush()
-        } ?: throw IllegalStateException("无法打开输出流")
+            ?: throw IllegalStateException("MediaStore insert 返回 null")
+
+        resolver.openOutputStream(uri, "w")?.use { os -> os.write(bytes) }
+            ?: throw IllegalStateException("无法打开输出流")
     }
 
-    @Suppress("DEPRECATION")
-    private fun saveViaFile(fileName: String, content: String) {
-        val base = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        val dir = File(base, SUB_DIR)
-        if (!dir.exists() && !dir.mkdirs()) {
-            throw IllegalStateException("无法创建目录 " + dir.absolutePath)
-        }
-        File(dir, fileName).writeText(content, Charsets.UTF_8)
+    private fun guessMime(name: String): String = when {
+        name.endsWith(".sh") -> "text/x-shellscript"
+        name.endsWith(".yml") || name.endsWith(".yaml") -> "text/yaml"
+        name.endsWith(".json") -> "application/json"
+        name.endsWith(".txt") || name.endsWith(".md") -> "text/plain"
+        name.endsWith(".kt") || name.endsWith(".java") -> "text/plain"
+        name.endsWith(".zip") -> "application/zip"
+        else -> "application/octet-stream"
     }
-
-    fun displayPath(fileName: String): String =
-        "/storage/emulated/0/Download/" + SUB_DIR + "/" + fileName
 }
