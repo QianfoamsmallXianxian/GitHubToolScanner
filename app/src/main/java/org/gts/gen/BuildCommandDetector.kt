@@ -21,7 +21,7 @@ object BuildCommandDetector {
         fromCi(files)?.let { return it }
 
         // Android / Gradle
-        val gradlePath = paths.firstOrNull {
+        val gradlePath = paths.sortedBy { it.count { ch -> ch == 0x2F.toChar() } }.firstOrNull {
             it.endsWith("build.gradle.kts") || it.endsWith("build.gradle")
         }
         if (gradlePath != null) {
