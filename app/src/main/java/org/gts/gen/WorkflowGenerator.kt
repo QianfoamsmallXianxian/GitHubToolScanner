@@ -277,6 +277,7 @@ class WorkflowGenerator {
                 appendLine("        run: |")
                 gapSteps.setupCommands.forEach { appendLine("          $it") }
                 appendLine()
+            }
 
             // 平台识别 + 从 Dockerfile / CI 抄来的装包命令
             if (platformSetup.platforms.isNotEmpty()) {
