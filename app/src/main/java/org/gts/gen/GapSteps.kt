@@ -58,19 +58,18 @@ object GapSteps {
                 // Dockerfile COPY 路径缺失：通常是被 .gitignore 排除，云端生成不了
                 g.why.contains("COPY") -> unresolved += "${g.what}（${g.why}）"
 
-                // CMake add_subdirectory 目录缺失
-                g.why.contains("add_subdirectory") -> {
-                    recursive = true
-                    setup += "git submodule update --init --recursive"
-                }
 
                 else -> {
-                    // fix 字段往往就是一条可执行命令，直接采纳
-                    val cmd = g.fix.trim()
-                    if (cmd.isNotBlank() && !cmd.contains("检查") && !cmd.contains("确认")) {
-                        setup += cmd
-                    } else {
+                    // fix 字段可能是多行文本：逐行取可执行命令，丢掉中文括号说明行
+                    val cmds = g.fix.lines()
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+                        .filterNot { it.startsWith("（") || it.startsWith("(") }
+                        .filterNot { it.contains("检查") || it.contains("确认") }
+                    if (cmds.isEmpty()) {
                         unresolved += "${g.what}（${g.why}）"
+                    } else {
+                        cmds.forEach { setup += it }
                     }
                 }
             }
