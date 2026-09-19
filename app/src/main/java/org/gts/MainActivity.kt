@@ -176,7 +176,7 @@ fun App() {
 
     /** 一键把生成的 workflow 推到目标仓库。 */
     fun doPushWorkflow() {
-        if (pushBusy || genYaml.isBlank()) return
+        if (pushBusy || reqs.isEmpty()) return
         if (token.isBlank()) {
             pushLog = "需要填 Token（要有 repo + workflow 权限）"
             return
@@ -187,12 +187,17 @@ fun App() {
             try {
                 val slug = RepoScanner(null).parseSlug(url)
                 val ownerRepo = slug.first + "/" + slug.second
-                val r = WorkflowPusher(token).push(
-                    ownerRepo, "gts-build-" + (targets.firstOrNull() ?: CiTarget.LINUX).name.lowercase() + ".yml", genYaml
-                )
-                pushLog = if (r.ok) {
-                    r.message + (r.htmlUrl?.let { "\n" + it } ?: "")
-                } else r.message
+                val sb = StringBuilder()
+                var ok = 0
+                for (t in targets) {
+                    val plan = WorkflowGenerator().generate(reqs, t, buildCmd, useSubmodules, files, gaps)
+                    val fn = "gts-build-" + t.name.lowercase() + ".yml"
+                    val r = WorkflowPusher(token).push(ownerRepo, fn, plan.yaml)
+                    sb.appendLine((if (r.ok) "[OK] " else "[X] ") + fn + " - " + r.message)
+                    if (r.ok) ok++
+                }
+                pushLog = sb.toString().trimEnd()
+                log = "已写入 " + ok + "/" + targets.size + " 个平台工作流"
             } catch (e: Exception) {
                 pushLog = "失败：" + e.message
             } finally {
