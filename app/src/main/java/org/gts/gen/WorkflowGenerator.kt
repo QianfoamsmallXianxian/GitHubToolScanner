@@ -79,6 +79,11 @@ class WorkflowGenerator {
         "libsdl3-dev", "libsdl3-ttf-dev", "libgl1-mesa-dev", "libglu1-mesa-dev",
         "libcurl4-openssl-dev", "libfontconfig1-dev", "libwayland-dev", "libx11-dev"
     )
+    /** 平台 SDK 提供的 API，不属于任何包管理器安装 */
+    private val platformSdkLibs = setOf(
+        "directx", "d3d", "d3d9", "d3d11", "d3d12", "dxgi", "dsound", "xinput",
+        "metal", "cocoa", "corefoundation", "coregraphics"
+    )
 
     private fun mapPkg(tool: String, t: CiTarget): String? = when (t.pkg) {
         PkgManager.APT -> aptTable[tool]
@@ -176,6 +181,9 @@ class WorkflowGenerator {
                 else -> {
                     // Android 目标下，NDK 自带工具链，跳过系统图形/网络库
                     if (target.isAndroid && tool in androidSkipPkgs) continue
+                    // 平台 SDK 提供的 API，任何包管理器都装不了，直接跳过
+                    if (tool in platformSdkLibs) continue
+
 
                     val pkg = mapPkg(tool, target)
                     if (pkg != null) {
