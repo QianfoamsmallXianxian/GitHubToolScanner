@@ -260,6 +260,7 @@ class WorkflowGenerator {
         gaps: List<org.gts.scan.ModuleGapDetector.Gap> = emptyList()
     ): Plan {
         val gapSteps = GapSteps.build(gaps)
+        val platformSetup = PlatformSetup.detect(files)
         val c = classify(reqs, target, files)
         val cmd = buildCommand.ifBlank {
             when {
@@ -297,6 +298,31 @@ class WorkflowGenerator {
                 appendLine("        run: |")
                 gapSteps.setupCommands.forEach { appendLine("          $it") }
                 appendLine()
+
+            // 平台识别 + 从 Dockerfile / CI 抄来的装包命令
+            if (platformSetup.platforms.isNotEmpty()) {
+                appendLine("      # 识别到的平台：" + platformSetup.platforms.joinToString(", "))
+            }
+            if (platformSetup.envVars.isNotEmpty()) {
+                appendLine("      - name: Set platform env")
+                appendLine("        run: |")
+                platformSetup.envVars.forEach { (k, v) ->
+                    appendLine("          echo \"$k=$v\" >> \\$GITHUB_ENV")
+                }
+                appendLine()
+            }
+            if (platformSetup.rawInstallLines.isNotEmpty()) {
+                appendLine("      - name: Install packages (from repo Dockerfile/CI)")
+                appendLine("        run: |")
+                platformSetup.rawInstallLines.forEach { appendLine("          $it") }
+                appendLine()
+            }
+            if (platformSetup.preBuildCommands.isNotEmpty()) {
+                appendLine("      - name: Pre-build setup")
+                appendLine("        run: |")
+                platformSetup.preBuildCommands.forEach { appendLine("          $it") }
+                appendLine()
+            }
             }
             gapSteps.unresolved.forEach {
                 appendLine("      # 无法自动补齐：$it")
