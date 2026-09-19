@@ -426,7 +426,7 @@ fun App() {
                     }
                 }
 
-                else -> Column(Modifier.weight(1f)) {
+                2 -> Column(Modifier.weight(1f)) {
                     Text("目标环境", style = MaterialTheme.typography.labelLarge)
                     Row(Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
