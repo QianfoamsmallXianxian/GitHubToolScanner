@@ -307,7 +307,7 @@ class WorkflowGenerator {
                 appendLine("      - name: Set platform env")
                 appendLine("        run: |")
                 platformSetup.envVars.forEach { (k, v) ->
-                    appendLine("          echo \"$k=$v\" >> \\$GITHUB_ENV")
+                     appendLine("          echo \"$k=$v\" >> \$GITHUB_ENV")
                 }
                 appendLine()
             }
